@@ -1,1159 +1,742 @@
 import { useState, useCallback } from "react";
 
-// ─── 定数 ────────────────────────────────────────────────
-const LINE_COLORS = [
-  { bg:"#0d2035", border:"#2196F3", text:"#64b5f6", label:"ライン A" },
-  { bg:"#200d1a", border:"#E91E63", text:"#f48fb1", label:"ライン B" },
-  { bg:"#0d2016", border:"#4CAF50", text:"#81c784", label:"ライン C" },
-  { bg:"#201a0d", border:"#FF9800", text:"#ffb74d", label:"ライン D" },
-  { bg:"#180d20", border:"#9C27B0", text:"#ce93d8", label:"ライン E" },
-  { bg:"#0d1a20", border:"#00BCD4", text:"#80deea", label:"ライン F" },
-];
-const LINE_IDS = ["A","B","C","D","E","F"];
-const TABS = ["📝 レース入力","🕰 過去記録","📊 精度分析"];
-
-const C = {
-  bg:"#07090f", card:"#0c1120", border:"#1a2840",
-  gold:"#f0b429", goldDim:"#7a5810",
-  blue:"#4a9eff", green:"#2ecc71", red:"#e74c3c",
-  orange:"#e67e22", purple:"#a855f7", teal:"#1abc9c",
-  yellow:"#f1c40f",
-  textPrimary:"#e8eaf6", textMuted:"#4a6a8c", textDim:"#1e2e40",
+// ==================== CONSTANTS ====================
+const EMPTY_PLAYER = {
+  name: "", pref: "", rank: "", grade: "S1",
+  winRate: "", threeRate: "", matches: "",
+  period: "",
+  B: "", nige: "", maki: "", sashi: "", ma: "",
+  line: "A", role: "先行",
 };
 
-const makeRider = (n) => ({
-  id: Date.now()+Math.random(),
-  number: String(n),
-  name: "", pref: "",
-  winRate: "",   // 勝率(%)
-  rate2: "",     // 2連対率(%)
-  rate3: "",     // 3連対率(%)
-  matchCount: "", // 試合数
-  bCount: "",    // B(バック)回数
-  nigeCount: "", // 逃回数
-  makuriCount: "", // 捲り回数
-  sashiCount: "", // 差し回数
-  maCount: "",   // マーク(マ)回数
-  kumi: "",      // 期別(例:123)
-  lineId: "",
-  linePos: "先行", // 先行/追込
-});
+const LINE_LABELS = ["A", "B", "C", "D", "E", "F"];
+const ROLE_OPTIONS = ["先行", "番手", "3番手", "4番手"];
+const GRADE_OPTIONS = ["S1", "S2", "A1", "A2", "A3"];
 
-const makeDefaultRiders = () => Array.from({length:9},(_,i)=>makeRider(i+1));
+// ==================== LOGIC ENGINE v2 ====================
+function analyzeRace(players, prizeLevel, anaModeOn) {
+  const results = { heads: [], third: [], buyTargets: [], anaBuy: [], skip: false, skipReason: "", patterns: [], warnings: [] };
 
-// ─── スタイル ─────────────────────────────────────────────
-const inp = (extra={}) => ({
-  padding:"5px 6px", borderRadius:"5px", border:`1.5px solid ${C.border}`,
-  fontSize:"12px", outline:"none", width:"100%",
-  background:"#050810", color:C.textPrimary, fontFamily:"inherit", ...extra,
-});
-const sel = () => ({...inp(), cursor:"pointer", fontSize:"11px"});
-const cardSt = (extra={}) => ({
-  background:C.card, border:`1px solid ${C.border}`,
-  borderRadius:"12px", padding:"16px 18px", marginBottom:"12px", ...extra,
-});
-const secLbl = (c=C.textMuted) => ({
-  fontSize:"9px", fontWeight:"700", color:c,
-  letterSpacing:"0.14em", textTransform:"uppercase", marginBottom:"8px",
-});
-const btnSt = (bg,color,extra={}) => ({
-  padding:"8px 18px", background:bg, border:"none", borderRadius:"8px",
-  color, fontWeight:"700", fontSize:"12px", cursor:"pointer", fontFamily:"inherit", ...extra,
-});
-const tag = (bg, color, border) => ({
-  display:"inline-flex", alignItems:"center",
-  padding:"2px 8px", borderRadius:"20px", fontSize:"10px", fontWeight:"700",
-  background:bg, color, border:`1px solid ${border||color}`,
-});
+  const withNum = players.map((p, i) => ({ ...p, num: i + 1 }));
+  const valid = withNum.filter(p => p.name && parseFloat(p.winRate) >= 0);
+  if (valid.length < 3) return results;
 
-// ─── 完全統合版 分析ロジック ──────────────────────────────
-function analyze(riders, prizeLevel, anaMode) {
-  const issues = [];
-  const warnings = [];
-  const result = {
-    valid:[], eliminated:[], bets:[], anaBets:[],
-    issues, warnings,
-    raceWorth: true,
-    skip: false,
-    verdict: "",
-    verdictColor: C.green,
-    candidatesFirst: [],   // 頭候補リスト（優先順）
-    candidatesThird: [],   // 3着候補リスト
-    scenarios: [],         // シナリオ別買い目
-    anaMode,
+  const n = (v) => parseFloat(v) || 0;
+
+  // ── STEP1: 絶対王者判定 ──
+  const absoluteKing = valid.find(p =>
+    n(p.winRate) >= 60 && n(p.threeRate) >= 90 &&
+    (n(p.B) >= 5 || n(p.nige) >= 5) && n(p.matches) >= 20
+  );
+
+  // ── 差し型最強 ──
+  const sashiTop = valid
+    .filter(p => n(p.sashi) >= 5 && n(p.matches) >= 20)
+    .sort((a, b) => n(b.sashi) - n(a.sashi));
+  const maTop = valid
+    .filter(p => n(p.ma) >= 5 && n(p.matches) >= 20)
+    .sort((a, b) => n(b.ma) - n(a.ma));
+
+  // ── 若手120期以降 ──
+  const youngsters = valid.filter(p => n(p.period) >= 120);
+
+  // ── ライン情報 ──
+  const lineMap = {};
+  valid.forEach(p => {
+    if (!lineMap[p.line]) lineMap[p.line] = [];
+    lineMap[p.line].push(p);
+  });
+  const lines = Object.values(lineMap);
+  const fivePersonLine = lines.find(l => l.length >= 5);
+  const fourPersonLines = lines.filter(l => l.length === 4);
+
+  // ── STEP6: 見送り判定 ──
+  const hasYoungOrSashi = youngsters.length > 0 || sashiTop.length > 0;
+  const hasFiveLine = !!fivePersonLine;
+  const allLinesSmall = lines.every(l => l.length <= 4);
+  if (absoluteKing && allLinesSmall && !hasYoungOrSashi) {
+    // 見送り候補だが条件厳格
+    if (n(absoluteKing.winRate) >= 60 && n(absoluteKing.threeRate) >= 90) {
+      results.skip = true;
+      results.skipReason = `完全絶対王者【${absoluteKing.name}】確認。対抗に若手120期以降・差し型最強不在のため見送り推奨。`;
+    }
+  }
+  if (hasFiveLine) {
+    results.skip = false;
+    results.warnings.push("⚠️ 5人ライン検出！崩壊リスク高く中穴チャンス→必ず買う");
+  }
+
+  const headSet = new Set();
+  const thirdSet = new Set();
+
+  const addHead = (p, reason, priority = 2) => {
+    if (!headSet.has(p.num)) {
+      headSet.add(p.num);
+      results.heads.push({ player: p, reason, priority });
+    }
   };
-
-  const withData = riders.filter(r => r.name !== "");
-  if (withData.length === 0) {
-    issues.push("選手データを入力してください");
-    result.raceWorth = false;
-    return result;
-  }
-
-  // ─── ライングループ化 ───
-  const lines = {};
-  riders.forEach(r => {
-    if (!r.lineId) return;
-    if (!lines[r.lineId]) lines[r.lineId] = [];
-    lines[r.lineId].push(r);
-  });
-  const lineIds = Object.keys(lines);
-  const lineSizes = {};
-  lineIds.forEach(lid => lineSizes[lid] = lines[lid].length);
-
-  // ─── STEP 1: 絶対王者判定 ───
-  let zetsuaiOja = null;
-  for (const r of withData) {
-    const win = parseFloat(r.winRate);
-    const r3  = parseFloat(r.rate3);
-    const mc  = parseInt(r.matchCount);
-    const b   = parseInt(r.bCount) || 0;
-    const nige= parseInt(r.nigeCount) || 0;
-    const topBN = b + nige;
-    if (win >= 60 && r3 >= 90 && mc >= 20 && topBN >= 10) {
-      zetsuaiOja = r;
-      break;
-    }
-  }
-  if (zetsuaiOja) {
-    warnings.push(`👑 絶対王者：${zetsuaiOja.name||zetsuaiOja.number}番（勝率${zetsuaiOja.winRate}%・3連${zetsuaiOja.rate3}%）→ 頭固定一択`);
-  }
-
-  // ─── STEP 2: 賞金レベル判定 ───
-  let raceType = "normal"; // normal / finals / a3
-  if (prizeLevel === "finals") {
-    raceType = "finals";
-    warnings.push("💎 決勝級レース（賞金20万円以上）→ 本命決着率上昇、本命線厚め");
-  } else if (prizeLevel === "a3") {
-    raceType = "a3";
-    result.skip = true;
-    result.raceWorth = false;
-    result.verdict = "A3チャレンジ予選 → 様子見推奨（配当低額）";
-    result.verdictColor = C.textMuted;
-    issues.push("A3チャレンジ予選は配当が低いため原則様子見推奨です");
-    return result;
-  }
-
-  // ─── STEP 3: ライン構造判定 ───
-  const has5PlusLine = lineIds.some(lid => lineSizes[lid] >= 5);
-  if (has5PlusLine) {
-    warnings.push("⚠ 5人以上のラインあり → 崩壊リスク高！対抗まくりライン厚め・見送り対象外");
-  }
-
-  // ─── STEP 4: 頭候補整理 ───
-  const firstCandidates = [];
-
-  // (A) 絶対王者 → 最優先
-  if (zetsuaiOja) {
-    firstCandidates.push({ rider: zetsuaiOja, reason:"👑 絶対王者", priority:1 });
-  }
-
-  // (B) 差し型最強パターン（絶対王者がいない or いても追加候補として明記）
-  for (const r of withData) {
-    if (zetsuaiOja && r.id === zetsuaiOja.id) continue;
-    const sashi = parseInt(r.sashiCount) || 0;
-    const ma    = parseInt(r.maCount) || 0;
-    const mc    = parseInt(r.matchCount) || 0;
-    const kumi  = parseInt(r.kumi) || 0;
-
-    // 差し5+試合数20+
-    if (sashi >= 5 && mc >= 20) {
-      // 失効条件チェック: 同ラインリーダーがB10+捲5+試合数20+ → 番手降格
-      const myLine = r.lineId ? lines[r.lineId] : null;
-      const myLineLeader = myLine ? myLine.find(m => m.linePos === "先行" && m.id !== r.id) : null;
-      let demoted = false;
-      if (myLineLeader) {
-        const lb = parseInt(myLineLeader.bCount)||0;
-        const lk = parseInt(myLineLeader.makuriCount)||0;
-        const lm = parseInt(myLineLeader.matchCount)||0;
-        if (lb >= 10 && lk >= 5 && lm >= 20) {
-          demoted = true;
-          firstCandidates.push({ rider:r, reason:`差し型最強(差${sashi}・${mc}戦) ※同ライン先頭強→2着候補`, priority:3 });
-        }
-      }
-      if (!demoted && !zetsuaiOja) {
-        firstCandidates.push({ rider:r, reason:`⚡ 差し型最強(差${sashi}・${mc}戦)`, priority:1 });
-      } else if (!demoted && zetsuaiOja) {
-        firstCandidates.push({ rider:r, reason:`差し型最強(差${sashi}・${mc}戦)`, priority:2 });
-      }
-    }
-    // マ5+試合数20+（新ルール）
-    else if (ma >= 5 && mc >= 20 && !zetsuaiOja) {
-      firstCandidates.push({ rider:r, reason:`⚡ マーク型最強(マ${ma}・${mc}戦)`, priority:1 });
-    }
-    // 差し回数トップ（試合数20未満でも）
-    else if (sashi >= 3 && mc < 20) {
-      firstCandidates.push({ rider:r, reason:`差し回数トップ候補(差${sashi}・試合数少)`, priority:3 });
-    }
-  }
-
-  // (C) 若手評価補正 (120期以降)
-  for (const r of withData) {
-    const kumi = parseInt(r.kumi) || 0;
-    const mc   = parseInt(r.matchCount) || 0;
-    const b    = parseInt(r.bCount) || 0;
-    const nige = parseInt(r.nigeCount) || 0;
-    const makuri = parseInt(r.makuriCount) || 0;
-    if (kumi >= 120) {
-      const alreadyIn = firstCandidates.some(c => c.rider.id === r.id);
-      if (!alreadyIn && (b + nige + makuri >= 3) && mc >= 20) {
-        firstCandidates.push({ rider:r, reason:`🔥 若手${kumi}期(${mc}戦)`, priority:2 });
-      }
-    }
-  }
-
-  // (D) 3人ライン先頭で試合数20未満 → 番手も頭候補に追加
-  lineIds.forEach(lid => {
-    if (lines[lid].length !== 3) return;
-    const leader = lines[lid].find(r => r.linePos === "先行");
-    if (!leader) return;
-    const mc = parseInt(leader.matchCount) || 0;
-    if (mc < 20) {
-      const bante = lines[lid].find(r => r.linePos === "追込");
-      if (bante) {
-        const alreadyIn = firstCandidates.some(c => c.rider.id === bante.id);
-        if (!alreadyIn) {
-          firstCandidates.push({ rider:bante, reason:`3人ライン番手(先頭試合数${mc}回で少)`, priority:3 });
-        }
-      }
-    }
-  });
-
-  // (E) 先行ライン先頭（通常候補）
-  lineIds.forEach(lid => {
-    const leader = lines[lid].find(r => r.linePos === "先行");
-    if (!leader) return;
-    const r3 = parseFloat(leader.rate3) || 0;
-    const mc = parseInt(leader.matchCount) || 0;
-    const alreadyIn = firstCandidates.some(c => c.rider.id === leader.id);
-    if (!alreadyIn && (r3 >= 70 || mc >= 20)) {
-      firstCandidates.push({ rider:leader, reason:`先行ライン先頭(3連${leader.rate3}%)`, priority:zetsuaiOja ? 3 : 2 });
-    }
-  });
-
-  // (F) 単騎まくり（捲り5+勝率30+）
-  for (const r of withData) {
-    const makuri = parseInt(r.makuriCount) || 0;
-    const win = parseFloat(r.winRate) || 0;
-    if (makuri >= 5 && win >= 30 && !r.lineId) {
-      const alreadyIn = firstCandidates.some(c => c.rider.id === r.id);
-      if (!alreadyIn) {
-        firstCandidates.push({ rider:r, reason:`単騎まくり(捲${makuri}・勝率${r.winRate}%)`, priority:3 });
-      }
-    }
-  }
-
-  // 優先度でソート
-  firstCandidates.sort((a,b) => a.priority - b.priority);
-  result.candidatesFirst = firstCandidates;
-
-  // ─── STEP 5: 3着候補 ───
-  const thirdCandidates = [];
-  const addThird = (r, reason) => {
-    if (!thirdCandidates.some(c => c.rider.id === r.id)) {
-      thirdCandidates.push({ rider:r, reason });
+  const addThird = (p, reason) => {
+    if (!thirdSet.has(p.num)) {
+      thirdSet.add(p.num);
+      results.third.push({ player: p, reason });
     }
   };
 
-  withData.forEach(r => {
-    const kumi = parseInt(r.kumi) || 0;
-    const sashi = parseInt(r.sashiCount) || 0;
-    const makuri = parseInt(r.makuriCount) || 0;
-    const r3 = parseFloat(r.rate3) || 0;
-
-    // 若手120期以降 → 試合数不問で自動採用
-    if (kumi >= 120) addThird(r, `若手${kumi}期`);
-    // ライン番手・最後尾
-    if (r.lineId && r.linePos === "追込") addThird(r, "ライン番手・最後尾");
-    // 差し型上位
-    if (sashi >= 3) addThird(r, `差し型(差${sashi})`);
-    // 単騎まくり
-    if (makuri >= 5) addThird(r, `まくり(捲${makuri})`);
-    // 3連対率50%以上
-    if (r3 >= 50) addThird(r, `3連${r.rate3}%`);
-  });
-  result.candidatesThird = thirdCandidates;
-
-  // ─── STEP 6: 見送り判定 ───
-  const smallestLineSize = Math.min(...lineIds.map(lid => lineSizes[lid]));
-  const isZetsuaiLeader = zetsuaiOja && lineIds.some(lid => {
-    const leader = lines[lid]?.find(r => r.linePos === "先行");
-    return leader?.id === zetsuaiOja.id;
-  });
-  const hasYoungOpponent = withData.some(r => {
-    const kumi = parseInt(r.kumi) || 0;
-    return kumi >= 120 && (!zetsuaiOja || r.id !== zetsuaiOja.id);
-  });
-  const allLineSizeLe4 = !has5PlusLine && lineIds.every(lid => lineSizes[lid] <= 4);
-
-  if (allLineSizeLe4 && isZetsuaiLeader && !hasYoungOpponent && prizeLevel !== "normal") {
-    result.skip = true;
-    result.raceWorth = false;
-    result.verdict = "⛔ 見送り推奨";
-    result.verdictColor = C.textMuted;
-    issues.push("全条件一致（4人以下ライン + 絶対王者先頭 + 若手不在 + 低配当）→ 見送り");
-    return result;
+  // ── 頭候補 ──
+  if (absoluteKing) {
+    addHead(absoluteKing, "✅ 完全絶対王者（勝率60%+3連90%+B/逃トップ+試合数20+）", 1);
   }
 
-  // ─── 有効選手（3連対率フィルター） ───
-  withData.forEach(r => {
-    const r3 = parseFloat(r.rate3);
-    const kumi = parseInt(r.kumi) || 0;
-    // 若手120期以降は消去しない
-    if (kumi >= 120) { result.valid.push({...r}); return; }
-    // 実績ゼロは消去OK
-    if (r.rate3 === "" || r3 === 0) {
-      result.eliminated.push({...r, reason:"実績なし（勝率・3連対率0%）"});
-      return;
+  sashiTop.forEach((p, i) => {
+    const isKingLine = absoluteKing && p.line === absoluteKing.line;
+    addHead(p, `🔥 差し型最強（差${p.sashi}回・試合数${p.matches}）${isKingLine ? "※絶対王者同ライン" : ""}`, i === 0 ? 1 : 2);
+  });
+  maTop.forEach(p => {
+    addHead(p, `🔥 マ型最強（マ${p.ma}回・試合数${p.matches}）`, 2);
+  });
+
+  youngsters.forEach(p => {
+    if (n(p.B) >= 10 && n(p.matches) >= 20 && p.role === "先行") {
+      addHead(p, `⭐ 若手${p.period}期・B${p.B}先行先頭（頭候補最上位）`, 1);
+    } else {
+      addHead(p, `⭐ 若手${p.period}期（120期以降自動採用）`, 3);
     }
-    // ライン番手は残す
-    if (r.lineId && r.linePos === "追込") { result.valid.push({...r}); return; }
-    result.valid.push({...r});
   });
 
-  // ─── 買い目生成 ───
-  // 頭候補上位から3つ、3着候補から幅広く
-  const topFirst = firstCandidates.slice(0, 4).map(c => c.rider);
-  const thirdPool = thirdCandidates.map(c => c.rider);
-  const allValid = result.valid;
-
-  const bets = [];
-  const addBet = (r1, r2, r3, betsArr) => {
-    if (!r1||!r2||!r3) return;
-    if (r1.number===r2.number||r1.number===r3.number||r2.number===r3.number) return;
-    const key = `${r1.number}-${r2.number}-${r3.number}`;
-    if (!betsArr.includes(key) && betsArr.length < 30) betsArr.push(key);
-  };
-
-  // シナリオA: 先行成功（先行先頭 - 番手 - 全員）
-  lineIds.forEach(lid => {
-    const leader = lines[lid]?.find(r => r.linePos === "先行");
-    const bante  = lines[lid]?.find(r => r.linePos === "追込");
-    if (!leader || !bante) return;
-    allValid.filter(r => r.id!==leader.id && r.id!==bante.id)
-      .forEach(third => addBet(leader, bante, third, bets));
-    allValid.filter(r => r.id!==leader.id && r.id!==bante.id)
-      .forEach(third => addBet(bante, leader, third, bets));
+  // 4人ライン番手
+  fourPersonLines.forEach(line => {
+    const bantePlayer = line.find(p => p.role === "番手");
+    if (bantePlayer) {
+      const leader = line.find(p => p.role === "先行");
+      if (leader && n(leader.nige) === 0) {
+        addHead(bantePlayer, `⚠️ 4人ライン番手差し切り頭警戒（先頭捲り0回）`, 3);
+      }
+    }
   });
 
-  // シナリオB: 差し型最強が頭（差し - 各ライン先頭 - 全員）
-  const dashiTop = firstCandidates.filter(c => c.reason.includes("差し型") || c.reason.includes("マーク型")).slice(0, 2);
-  dashiTop.forEach(({rider:dashi}) => {
-    topFirst.filter(r => r.id !== dashi.id).forEach(second => {
-      thirdPool.filter(r => r.id !== dashi.id && r.id !== second.id)
-        .forEach(third => addBet(dashi, second, third, bets));
+  // 残り選手も中位採用
+  valid.forEach(p => {
+    if (!headSet.has(p.num) && (p.role === "番手" || p.role === "3番手")) {
+      const lineMembers = lineMap[p.line] || [];
+      const leader = lineMembers.find(lp => lp.role === "先行");
+      if (leader && (sashiTop.find(s => s.num === leader.num) || (absoluteKing && leader.num === absoluteKing.num))) {
+        addHead(p, `💡 強力ライン${p.line}の${p.role}（差し切り候補）`, 4);
+      }
+    }
+  });
+
+  // ── 3着候補 ──
+  youngsters.forEach(p => addThird(p, `若手${p.period}期（試合数不問・自動採用）`));
+
+  lines.forEach(line => {
+    line.forEach(p => {
+      if (p.role === "番手" || p.role === "3番手" || p.role === "4番手") {
+        addThird(p, `ライン${p.line}の${p.role}（ライン関連自動採用）`);
+      }
     });
   });
 
-  // シナリオC: 絶対王者 - 番手 - 全員
-  if (zetsuaiOja) {
-    const ojaLine = lines[zetsuaiOja.lineId];
-    const ojaBante = ojaLine?.find(r => r.linePos === "追込");
-    allValid.filter(r => r.id !== zetsuaiOja.id && r.id !== ojaBante?.id)
-      .forEach(third => {
-        addBet(zetsuaiOja, ojaBante||allValid[0], third, bets);
-      });
+  sashiTop.forEach(p => addThird(p, `差し型上位（差${p.sashi}回）`));
+  maTop.forEach(p => addThird(p, `マ型上位（マ${p.ma}回）`));
+
+  valid.forEach(p => {
+    if (!thirdSet.has(p.num)) addThird(p, "全候補採用（中穴総流し精神）");
+  });
+
+  results.heads.sort((a, b) => a.priority - b.priority);
+
+  // ── パターン判定 ──
+  if (sashiTop.length > 0 && lines.filter(l => l.some(p => n(p.maki) >= 3)).length >= 2) {
+    results.patterns.push("📌 パターン①：差し型最強頭＋対抗まくり連鎖（17,000円〜実証済み）");
+  }
+  if (lines.some(l => l.length === 3 && l.filter(p => n(p.sashi) >= 5).length >= 2)) {
+    results.patterns.push("📌 パターン②：3人ライン番手差し切り完結（8,700円実証済み）");
+  }
+  if (fivePersonLine) {
+    results.patterns.push("📌 パターン⑤：5人ライン崩壊→対抗まくり連鎖（32,000円実証済み）");
+  }
+  if (fourPersonLines.length > 0) {
+    results.patterns.push("📌 パターン④：4人ライン番手差し切り頭（7,400円実証済み）");
   }
 
-  result.bets = bets.slice(0, 15);
-  if (bets.length > 15) issues.push(`買い目${bets.length}点 → 上位15点に絞り込み`);
+  // ── 買い目生成（最大25点）──
+  const headNums = results.heads.slice(0, 4).map(h => h.player.num);
+  const thirdNums = results.third.slice(0, 6).map(t => t.player.num);
+  const allNums = valid.map(p => p.num);
 
-  // 穴狙い買い目（若手・差し型を軸）
-  if (anaMode) {
-    const anaBets = [];
-    const anaAxis = [
-      ...firstCandidates.filter(c => c.reason.includes("若手")).map(c => c.rider),
-      ...firstCandidates.filter(c => c.reason.includes("差し型")).map(c => c.rider),
-    ].slice(0, 3);
-
-    anaAxis.forEach(axis => {
-      allValid.filter(r => r.id !== axis.id).forEach(second => {
-        thirdPool.filter(r => r.id !== axis.id && r.id !== second.id)
-          .slice(0, 3)
-          .forEach(third => {
-            const key = `${axis.number}-${second.number}-${third.number}`;
-            if (!anaBets.includes(key) && anaBets.length < 20) anaBets.push(key);
-          });
-      });
-    });
-    result.anaBets = anaBets.slice(0, 10);
+  let count = 0;
+  const buys = [];
+  for (const h of headNums) {
+    for (const s of allNums) {
+      if (s === h) continue;
+      for (const t of thirdNums) {
+        if (t === h || t === s) continue;
+        if (count >= 25) break;
+        buys.push([h, s, t]);
+        count++;
+      }
+      if (count >= 25) break;
+    }
+    if (count >= 25) break;
   }
+  results.buyTargets = buys;
 
-  // ─── 判定バナー ───
-  if (has5PlusLine) {
-    result.verdict = "🔥 5人ライン崩壊狙い → 買い（穴出やすい）";
-    result.verdictColor = C.orange;
-  } else if (zetsuaiOja && raceType === "finals") {
-    result.verdict = "👑 絶対王者×決勝 → 本命線厚め";
-    result.verdictColor = C.gold;
-  } else if (dashiTop.length > 0) {
-    result.verdict = "⚡ 差し型最強パターン → 中穴狙い推奨";
-    result.verdictColor = C.purple;
-  } else {
-    result.verdict = "✅ このレースは買い";
-    result.verdictColor = C.green;
+  // 穴狙い買い目（頭を差し型・若手に絞る）
+  const anaHeads = results.heads.filter(h => h.priority <= 2).slice(0, 2).map(h => h.player.num);
+  const anaThirds = results.third.slice(0, 5).map(t => t.player.num);
+  let anaCount = 0;
+  const anaBuys = [];
+  for (const h of anaHeads) {
+    for (const s of allNums) {
+      if (s === h) continue;
+      for (const t of anaThirds) {
+        if (t === h || t === s) continue;
+        if (anaCount >= 10) break;
+        anaBuys.push([h, s, t]);
+        anaCount++;
+      }
+      if (anaCount >= 10) break;
+    }
+    if (anaCount >= 10) break;
   }
+  results.anaBuy = anaBuys;
 
-  return result;
+  return results;
 }
 
-function checkHit(bets, anaBets, r1, r2, r3) {
-  const key = `${r1}-${r2}-${r3}`;
-  const normalHit = bets.includes(key);
-  const anaHit = anaBets.includes(key);
-  return { hit:normalHit||anaHit, normalHit, anaHit, key };
-}
+// ==================== COMPONENTS ====================
 
-// ─── RiderRow ─────────────────────────────────────────────
-function RiderRow({rider, onChange, onRemove, lineColor}) {
-  const upd = f => e => onChange({...rider, [f]: e.target.value});
-  const ni = (extra={}) => ({...inp(extra), fontSize:"11px", padding:"4px 5px"});
-
+function Badge({ color, children }) {
+  const colors = {
+    red: "bg-red-500/20 text-red-300 border border-red-500/40",
+    yellow: "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40",
+    green: "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40",
+    blue: "bg-blue-500/20 text-blue-300 border border-blue-500/40",
+    purple: "bg-purple-500/20 text-purple-300 border border-purple-500/40",
+    gray: "bg-gray-500/20 text-gray-300 border border-gray-500/40",
+  };
   return (
-    <div style={{
-      display:"grid",
-      gridTemplateColumns:"28px 90px 54px 44px 44px 44px 44px 36px 36px 36px 36px 36px 40px 76px 24px",
-      gap:"3px", alignItems:"center", padding:"6px 8px",
-      background: lineColor ? lineColor.bg : "#050810",
-      borderLeft: `3px solid ${lineColor ? lineColor.border : C.border}`,
-      borderRadius:"6px", marginBottom:"4px",
-    }}>
-      <input value={rider.number} onChange={upd("number")} placeholder="#"
-        style={ni({textAlign:"center", fontWeight:"800", color:C.gold})}/>
-      <input value={rider.name} onChange={upd("name")} placeholder="選手名" style={ni({})}/>
-      <input value={rider.pref} onChange={upd("pref")} placeholder="府県" style={ni({})}/>
-      <input value={rider.winRate} onChange={upd("winRate")} placeholder="勝率%" type="number" style={ni({textAlign:"center"})}/>
-      <input value={rider.rate3} onChange={upd("rate3")} placeholder="3連%" type="number" style={ni({textAlign:"center"})}/>
-      <input value={rider.matchCount} onChange={upd("matchCount")} placeholder="試合" type="number" style={ni({textAlign:"center"})}/>
-      <input value={rider.kumi} onChange={upd("kumi")} placeholder="期" type="number" style={ni({textAlign:"center"})}/>
-      <input value={rider.bCount} onChange={upd("bCount")} placeholder="B" type="number" style={ni({textAlign:"center"})}/>
-      <input value={rider.nigeCount} onChange={upd("nigeCount")} placeholder="逃" type="number" style={ni({textAlign:"center"})}/>
-      <input value={rider.makuriCount} onChange={upd("makuriCount")} placeholder="捲" type="number" style={ni({textAlign:"center"})}/>
-      <input value={rider.sashiCount} onChange={upd("sashiCount")} placeholder="差" type="number" style={ni({textAlign:"center"})}/>
-      <input value={rider.maCount} onChange={upd("maCount")} placeholder="マ" type="number" style={ni({textAlign:"center"})}/>
-      <select value={rider.lineId} onChange={upd("lineId")} style={{...sel(), fontSize:"10px"}}>
-        <option value="">なし</option>
-        {LINE_IDS.map(id=><option key={id} value={id}>{id}</option>)}
-      </select>
-      <select value={rider.linePos} onChange={upd("linePos")} style={sel()}>
-        <option value="先行">先行</option>
-        <option value="追込">追込</option>
-      </select>
-      <button onClick={onRemove} style={{
-        background:"transparent", border:`1px solid #2a1010`, borderRadius:"4px",
-        color:C.red, cursor:"pointer", fontSize:"10px", width:"24px", height:"24px",
-      }}>✕</button>
+    <span className={`inline-block px-2 py-0.5 rounded text-xs font-bold ${colors[color] || colors.gray}`}>
+      {children}
+    </span>
+  );
+}
+
+function PriorityBadge({ priority }) {
+  if (priority === 1) return <Badge color="red">最優先</Badge>;
+  if (priority === 2) return <Badge color="yellow">優先</Badge>;
+  if (priority === 3) return <Badge color="blue">候補</Badge>;
+  return <Badge color="gray">補欠</Badge>;
+}
+
+function PlayerRow({ player, idx, onChange, onRemove, lineColor }) {
+  const n = idx + 1;
+  return (
+    <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-3 mb-2">
+      {/* Row 1: Number + Name + Pref + Grade */}
+      <div className="flex items-center gap-2 mb-2">
+        <span className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-black text-white ${lineColor}`}>
+          {n}
+        </span>
+        <input
+          value={player.name}
+          onChange={e => onChange("name", e.target.value)}
+          placeholder="選手名"
+          className="flex-1 bg-gray-700/50 border border-gray-600/50 rounded-lg px-2 py-1.5 text-white text-sm placeholder-gray-500 min-w-0"
+        />
+        <input
+          value={player.pref}
+          onChange={e => onChange("pref", e.target.value)}
+          placeholder="府県"
+          className="w-14 bg-gray-700/50 border border-gray-600/50 rounded-lg px-2 py-1.5 text-white text-sm placeholder-gray-500"
+        />
+        <select
+          value={player.grade}
+          onChange={e => onChange("grade", e.target.value)}
+          className="w-14 bg-gray-700/50 border border-gray-600/50 rounded-lg px-1 py-1.5 text-white text-sm"
+        >
+          {GRADE_OPTIONS.map(g => <option key={g}>{g}</option>)}
+        </select>
+        <button onClick={onRemove} className="text-gray-500 hover:text-red-400 transition-colors text-lg leading-none">×</button>
+      </div>
+
+      {/* Row 2: Stats */}
+      <div className="grid grid-cols-3 gap-1.5 mb-2">
+        {[
+          ["winRate", "勝率%"], ["threeRate", "3連対%"], ["matches", "試合数"],
+        ].map(([key, label]) => (
+          <div key={key}>
+            <div className="text-gray-500 text-xs mb-0.5">{label}</div>
+            <input
+              type="number"
+              value={player[key]}
+              onChange={e => onChange(key, e.target.value)}
+              className="w-full bg-gray-700/50 border border-gray-600/50 rounded-lg px-2 py-1 text-white text-sm"
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Row 3: B/逃/捲/差/マ */}
+      <div className="grid grid-cols-5 gap-1 mb-2">
+        {[["B", "B"], ["nige", "逃"], ["maki", "捲"], ["sashi", "差"], ["ma", "マ"]].map(([key, label]) => (
+          <div key={key}>
+            <div className="text-gray-500 text-xs mb-0.5 text-center">{label}</div>
+            <input
+              type="number"
+              value={player[key]}
+              onChange={e => onChange(key, e.target.value)}
+              className="w-full bg-gray-700/50 border border-gray-600/50 rounded-lg px-1 py-1 text-white text-sm text-center"
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Row 4: Line + Role + Period */}
+      <div className="flex gap-2 items-center flex-wrap">
+        <div className="flex items-center gap-1">
+          <span className="text-gray-400 text-xs">ライン</span>
+          <select
+            value={player.line}
+            onChange={e => onChange("line", e.target.value)}
+            className="bg-gray-700/50 border border-gray-600/50 rounded-lg px-2 py-1 text-white text-sm"
+          >
+            {LINE_LABELS.map(l => <option key={l}>{l}</option>)}
+          </select>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="text-gray-400 text-xs">役割</span>
+          <select
+            value={player.role}
+            onChange={e => onChange("role", e.target.value)}
+            className="bg-gray-700/50 border border-gray-600/50 rounded-lg px-2 py-1 text-white text-sm"
+          >
+            {ROLE_OPTIONS.map(r => <option key={r}>{r}</option>)}
+          </select>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="text-gray-400 text-xs">期</span>
+          <input
+            type="number"
+            value={player.period}
+            onChange={e => onChange("period", e.target.value)}
+            placeholder="期別"
+            className="w-16 bg-gray-700/50 border border-gray-600/50 rounded-lg px-2 py-1 text-white text-sm"
+          />
+        </div>
+      </div>
     </div>
   );
 }
 
-// ─── ImportModal ──────────────────────────────────────────
-function ImportModal({onImport, onClose}) {
-  const [text, setText] = useState("");
-  const [error, setError] = useState("");
+function ResultPanel({ result, players }) {
+  if (!result) return null;
 
-  const handlePaste = async () => {
-    try {
-      const clip = await navigator.clipboard.readText();
-      setText(clip); setError("");
-    } catch { setError("テキストを直接貼り付けてください。"); }
+  const LINE_COLORS = ["bg-red-500", "bg-blue-500", "bg-yellow-500", "bg-green-500", "bg-purple-500", "bg-pink-500"];
+  const getColor = (num) => {
+    const p = players[num - 1];
+    if (!p) return "bg-gray-500";
+    const li = LINE_LABELS.indexOf(p.line);
+    return LINE_COLORS[li] || "bg-gray-500";
   };
 
-  const handleImport = () => {
-    try {
-      const json = JSON.parse(text.trim());
-      if (!json.__keirinScout) { setError("KEIRIN SCOUT拡張機能からコピーされたデータではありません。"); return; }
-      onImport(json);
-    } catch { setError("データの形式が正しくありません。"); }
-  };
+  if (result.skip) {
+    return (
+      <div className="bg-orange-900/30 border border-orange-500/50 rounded-2xl p-4 mt-4">
+        <div className="text-orange-300 font-bold text-lg mb-2">🚫 見送り推奨</div>
+        <div className="text-orange-200 text-sm">{result.skipReason}</div>
+      </div>
+    );
+  }
 
   return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.9)",display:"flex",
-      alignItems:"center",justifyContent:"center",zIndex:1000,padding:"20px"}}>
-      <div style={{...cardSt(),width:"100%",maxWidth:"460px"}}>
-        <div style={{fontSize:"15px",fontWeight:"800",color:C.teal,marginBottom:"12px"}}>📥 出走表インポート</div>
-        <div style={{...cardSt({background:"#030608",marginBottom:"12px"})}}>
-          <div style={secLbl()}>使い方</div>
-          {["KEIRIN.jp または Gamboo の出走表ページを開く",
-            "ブラウザ右上の 🚴 KEIRIN SCOUT 拡張機能アイコンをクリック",
-            "「データをコピーしてアプリへ」ボタンを押す",
-            "下の「クリップボードから貼り付け」を押す",
-          ].map((s,i)=>(
-            <div key={i} style={{display:"flex",gap:"8px",alignItems:"flex-start",marginBottom:"6px"}}>
-              <span style={{width:"16px",height:"16px",borderRadius:"50%",
-                background:`linear-gradient(135deg,${C.teal},#16a085)`,
-                color:"#050d10",fontSize:"9px",fontWeight:"900",
-                display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,
-              }}>{i+1}</span>
-              <span style={{fontSize:"11px",color:C.textMuted,lineHeight:"1.5"}}>{s}</span>
+    <div className="space-y-4 mt-4">
+      {/* Warnings */}
+      {result.warnings.map((w, i) => (
+        <div key={i} className="bg-yellow-900/30 border border-yellow-500/50 rounded-xl p-3 text-yellow-300 text-sm font-bold">
+          {w}
+        </div>
+      ))}
+
+      {/* Patterns */}
+      {result.patterns.length > 0 && (
+        <div className="bg-purple-900/30 border border-purple-500/50 rounded-xl p-3">
+          <div className="text-purple-300 font-bold text-sm mb-2">🎯 該当パターン</div>
+          {result.patterns.map((p, i) => (
+            <div key={i} className="text-purple-200 text-xs mb-1">{p}</div>
+          ))}
+        </div>
+      )}
+
+      {/* Head Candidates */}
+      <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4">
+        <div className="text-yellow-400 font-black text-base mb-3">🏆 頭候補（優先順）</div>
+        <div className="space-y-2">
+          {result.heads.map((h, i) => (
+            <div key={i} className="flex items-start gap-3 bg-gray-700/40 rounded-lg p-3">
+              <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-black text-white flex-shrink-0 ${getColor(h.player.num)}`}>
+                {h.player.num}
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-white font-bold text-sm">{h.player.name}</span>
+                  <PriorityBadge priority={h.priority} />
+                </div>
+                <div className="text-gray-400 text-xs mt-0.5 leading-relaxed">{h.reason}</div>
+              </div>
+              <div className="text-gray-500 text-xs flex-shrink-0">#{i + 1}</div>
             </div>
           ))}
         </div>
-        <button onClick={handlePaste} style={btnSt(`linear-gradient(135deg,${C.teal},#16a085)`,"#050d10",{width:"100%",marginBottom:"8px",fontWeight:"800"})}>
-          📋 クリップボードから貼り付け
+      </div>
+
+      {/* Third Candidates */}
+      <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4">
+        <div className="text-emerald-400 font-black text-base mb-3">🎯 3着候補（総流し対象）</div>
+        <div className="flex flex-wrap gap-2">
+          {result.third.slice(0, 9).map((t, i) => (
+            <div key={i} className="flex items-center gap-1.5 bg-gray-700/40 rounded-lg px-3 py-1.5">
+              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-black text-white ${getColor(t.player.num)}`}>
+                {t.player.num}
+              </span>
+              <span className="text-white text-sm font-medium">{t.player.name}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Buy Targets */}
+      <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-blue-400 font-black text-base">🎰 推奨買い目（3連単）</div>
+          <Badge color="blue">{result.buyTargets.length}点</Badge>
+        </div>
+        <div className="grid grid-cols-3 gap-1.5">
+          {result.buyTargets.slice(0, 25).map((b, i) => (
+            <div key={i} className="bg-gray-700/40 rounded-lg px-2 py-1.5 text-center">
+              <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[0])}`}>{b[0]}</span>
+              <span className="text-gray-400 text-xs mx-0.5">-</span>
+              <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[1])}`}>{b[1]}</span>
+              <span className="text-gray-400 text-xs mx-0.5">-</span>
+              <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[2])}`}>{b[2]}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Ana Buy */}
+      {result.anaBuy.length > 0 && (
+        <div className="bg-gray-800/60 border border-orange-700/40 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-orange-400 font-black text-base">🕳️ 穴狙い買い目</div>
+            <Badge color="yellow">{result.anaBuy.length}点</Badge>
+          </div>
+          <div className="text-gray-400 text-xs mb-2">差し型最強・若手頭に絞った中穴特化</div>
+          <div className="grid grid-cols-3 gap-1.5">
+            {result.anaBuy.map((b, i) => (
+              <div key={i} className="bg-orange-900/20 border border-orange-700/30 rounded-lg px-2 py-1.5 text-center">
+                <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[0])}`}>{b[0]}</span>
+                <span className="text-gray-400 text-xs mx-0.5">-</span>
+                <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[1])}`}>{b[1]}</span>
+                <span className="text-gray-400 text-xs mx-0.5">-</span>
+                <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[2])}`}>{b[2]}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==================== HISTORY & BALANCE ====================
+function HistoryTab({ history, setHistory }) {
+  const [form, setForm] = useState({ race: "", invest: "", payout: "", note: "" });
+
+  const add = () => {
+    if (!form.race || !form.invest) return;
+    setHistory(h => [...h, { ...form, id: Date.now(), invest: Number(form.invest), payout: Number(form.payout || 0) }]);
+    setForm({ race: "", invest: "", payout: "", note: "" });
+  };
+
+  const totalInvest = history.reduce((s, h) => s + h.invest, 0);
+  const totalPayout = history.reduce((s, h) => s + h.payout, 0);
+  const balance = totalPayout - totalInvest;
+  const hitCount = history.filter(h => h.payout > 0).length;
+
+  return (
+    <div className="space-y-4">
+      {/* Balance Summary */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4 text-center">
+          <div className="text-gray-400 text-xs mb-1">累計収支</div>
+          <div className={`text-2xl font-black ${balance >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+            {balance >= 0 ? "+" : ""}{balance.toLocaleString()}円
+          </div>
+        </div>
+        <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4 text-center">
+          <div className="text-gray-400 text-xs mb-1">的中率</div>
+          <div className="text-2xl font-black text-blue-400">
+            {history.length > 0 ? Math.round(hitCount / history.length * 100) : 0}%
+          </div>
+          <div className="text-gray-500 text-xs">{hitCount}/{history.length}回</div>
+        </div>
+        <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4 text-center">
+          <div className="text-gray-400 text-xs mb-1">投資額</div>
+          <div className="text-lg font-bold text-gray-300">{totalInvest.toLocaleString()}円</div>
+        </div>
+        <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4 text-center">
+          <div className="text-gray-400 text-xs mb-1">払戻額</div>
+          <div className="text-lg font-bold text-gray-300">{totalPayout.toLocaleString()}円</div>
+        </div>
+      </div>
+
+      {/* Add Record */}
+      <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4">
+        <div className="text-white font-bold text-sm mb-3">＋ 記録を追加</div>
+        <input
+          value={form.race}
+          onChange={e => setForm(f => ({ ...f, race: e.target.value }))}
+          placeholder="レース名（例：川崎 第6R）"
+          className="w-full bg-gray-700/50 border border-gray-600/50 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-500 mb-2"
+        />
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <div>
+            <div className="text-gray-400 text-xs mb-1">投資額（円）</div>
+            <input type="number" value={form.invest} onChange={e => setForm(f => ({ ...f, invest: e.target.value }))}
+              className="w-full bg-gray-700/50 border border-gray-600/50 rounded-lg px-3 py-2 text-white text-sm" />
+          </div>
+          <div>
+            <div className="text-gray-400 text-xs mb-1">払戻額（円・0=外れ）</div>
+            <input type="number" value={form.payout} onChange={e => setForm(f => ({ ...f, payout: e.target.value }))}
+              className="w-full bg-gray-700/50 border border-gray-600/50 rounded-lg px-3 py-2 text-white text-sm" />
+          </div>
+        </div>
+        <textarea
+          value={form.note}
+          onChange={e => setForm(f => ({ ...f, note: e.target.value }))}
+          placeholder="メモ（外れた理由、気づき等）"
+          rows={2}
+          className="w-full bg-gray-700/50 border border-gray-600/50 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-500 mb-3 resize-none"
+        />
+        <button onClick={add} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded-lg text-sm transition-colors">
+          記録する
         </button>
-        {text && <div style={{padding:"6px 8px",background:"#030608",border:`1px solid ${C.border}`,borderRadius:"6px",fontSize:"10px",color:C.textMuted,marginBottom:"8px",wordBreak:"break-all",maxHeight:"50px",overflow:"hidden"}}>{text.substring(0,100)}…</div>}
-        {error && <div style={{padding:"7px 10px",background:"#2a0a0a",border:`1px solid ${C.red}`,borderRadius:"6px",fontSize:"11px",color:C.red,marginBottom:"8px"}}>{error}</div>}
-        <div style={{display:"flex",gap:"8px"}}>
-          <button onClick={handleImport} disabled={!text}
-            style={btnSt(text?C.gold:"#1a2030",text?"#080d18":C.textDim,{flex:1,fontWeight:"800",opacity:text?1:0.5})}>
-            インポートする
-          </button>
-          <button onClick={onClose} style={btnSt("transparent",C.textMuted,{border:`1px solid ${C.border}`})}>閉じる</button>
-        </div>
       </div>
-    </div>
-  );
-}
 
-// ─── HitCheckModal ────────────────────────────────────────
-function HitCheckModal({entry, onClose, onUpdateEntry}) {
-  const [r1,setR1]=useState(entry.actualResult?.r1||"");
-  const [r2,setR2]=useState(entry.actualResult?.r2||"");
-  const [r3,setR3]=useState(entry.actualResult?.r3||"");
-  const [retAmt,setRetAmt]=useState(entry.returnAmount>0?String(entry.returnAmount):"");
-  const bets=entry.bets||[]; const anaBets=entry.anaBets||[];
-  const cr=(r1&&r2&&r3)?checkHit(bets,anaBets,r1,r2,r3):null;
-  return(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.9)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:"20px"}}>
-      <div style={{...cardSt(),width:"100%",maxWidth:"440px"}}>
-        <div style={{fontSize:"15px",fontWeight:"800",color:C.teal,marginBottom:"4px"}}>🔍 的中チェック</div>
-        <div style={{fontSize:"11px",color:C.textMuted,marginBottom:"14px"}}>{entry.raceTitle||"無題レース"}</div>
-        <div style={cardSt({background:"#030608",marginBottom:"12px"})}>
-          <div style={secLbl()}>実際のレース結果（3連単）</div>
-          <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
-            {[["1着",r1,setR1],["2着",r2,setR2],["3着",r3,setR3]].map(([label,val,setVal],i)=>(
-              <div key={i} style={{flex:1,textAlign:"center"}}>
-                <div style={{fontSize:"9px",color:C.textMuted,marginBottom:"4px"}}>{label}</div>
-                <input value={val} onChange={e=>setVal(e.target.value)} placeholder="車番" type="number"
-                  style={inp({textAlign:"center",fontSize:"20px",fontWeight:"900",color:C.gold,padding:"8px"})}/>
-              </div>
-            ))}
-          </div>
-        </div>
-        {cr&&(
-          <div style={{padding:"12px 14px",borderRadius:"9px",marginBottom:"12px",animation:"fadeIn 0.3s ease",
-            background:cr.hit?(cr.anaHit&&!cr.normalHit?"#180a28":"#0a2a1a"):"#2a0a0a",
-            border:`1.5px solid ${cr.hit?(cr.anaHit&&!cr.normalHit?C.purple:C.green):C.red}`}}>
-            <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
-              <span style={{fontSize:"24px"}}>{cr.hit?(cr.anaHit&&!cr.normalHit?"🎰":"🎯"):"😞"}</span>
-              <div>
-                <div style={{fontWeight:"800",fontSize:"15px",color:cr.hit?(cr.anaHit&&!cr.normalHit?C.purple:C.green):C.red}}>
-                  {cr.hit?(cr.anaHit&&!cr.normalHit?"穴狙い買い目で的中！":"推奨買い目で的中！"):"買い目に含まれていません"}
-                </div>
-                <div style={{fontSize:"11px",color:C.textMuted,marginTop:"2px"}}>結果：{r1}−{r2}−{r3}</div>
+      {/* History List */}
+      <div className="space-y-2">
+        {[...history].reverse().map(h => (
+          <div key={h.id} className={`bg-gray-800/60 border rounded-xl p-3 ${h.payout > 0 ? "border-emerald-700/50" : "border-red-700/30"}`}>
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-white text-sm font-bold">{h.race}</div>
+              <div className={`text-sm font-black ${h.payout > 0 ? "text-emerald-400" : "text-red-400"}`}>
+                {h.payout > 0 ? `+${(h.payout - h.invest).toLocaleString()}円` : `-${h.invest.toLocaleString()}円`}
               </div>
             </div>
-          </div>
-        )}
-        {bets.length>0&&(
-          <div style={{marginBottom:"10px"}}>
-            <div style={secLbl()}>買い目一覧</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:"5px"}}>
-              {bets.map((b,i)=>{const isMatch=cr&&b===cr.key;return(
-                <div key={i} style={{padding:"5px 9px",borderRadius:"6px",fontSize:"12px",fontWeight:"800",
-                  fontVariantNumeric:"tabular-nums",
-                  background:isMatch?"#0a3020":"#0d1a30",
-                  border:`1.5px solid ${isMatch?C.green:C.goldDim}`,
-                  color:isMatch?C.green:C.gold,
-                  transform:isMatch?"scale(1.08)":"scale(1)",
-                  boxShadow:isMatch?`0 0 10px rgba(46,204,113,0.4)`:"none",
-                }}>{b}</div>
-              );})}
+            <div className="flex gap-3 text-xs text-gray-400">
+              <span>投資: {h.invest.toLocaleString()}円</span>
+              {h.payout > 0 && <span>払戻: {h.payout.toLocaleString()}円</span>}
             </div>
+            {h.note && <div className="text-gray-500 text-xs mt-1 italic">{h.note}</div>}
+            <button
+              onClick={() => setHistory(hs => hs.filter(x => x.id !== h.id))}
+              className="text-gray-600 hover:text-red-400 text-xs mt-1 transition-colors"
+            >削除</button>
           </div>
+        ))}
+        {history.length === 0 && (
+          <div className="text-gray-500 text-sm text-center py-8">まだ記録がありません</div>
         )}
-        {cr?.hit&&(
-          <div style={{marginBottom:"12px"}}>
-            <div style={secLbl()}>払戻額（円）</div>
-            <input value={retAmt} onChange={e=>setRetAmt(e.target.value)} type="number" placeholder="例：25000" style={inp({})}/>
-          </div>
-        )}
-        <div style={{display:"flex",gap:"8px"}}>
-          <button onClick={()=>onUpdateEntry({...entry,actualResult:{r1,r2,r3},
-            hit:cr?.hit||false,normalHit:cr?.normalHit||false,anaHit:cr?.anaHit||false,
-            skip:false,returnAmount:parseInt(retAmt)||0,
-          })} style={btnSt(`linear-gradient(135deg,${C.teal},#16a085)`,"#050d10",{flex:1,fontWeight:"800"})}>
-            結果を保存
-          </button>
-          <button onClick={onClose} style={btnSt("transparent",C.textMuted,{border:`1px solid ${C.border}`})}>閉じる</button>
-        </div>
       </div>
     </div>
   );
 }
 
-// ─── SaveModal ────────────────────────────────────────────
-function SaveModal({result,raceTitle,onSave,onClose}){
-  const [hit,setHit]=useState(false);
-  const [skip,setSkip]=useState(!result.raceWorth);
-  const [betAmt,setBetAmt]=useState("");
-  const [retAmt,setRetAmt]=useState("");
-  const [memo,setMemo]=useState("");
-  return(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:"20px"}}>
-      <div style={{...cardSt(),width:"100%",maxWidth:"400px",maxHeight:"90vh",overflowY:"auto"}}>
-        <div style={{fontSize:"15px",fontWeight:"800",color:C.gold,marginBottom:"14px"}}>📋 レースを記録する</div>
-        <div style={{marginBottom:"12px"}}>
-          <div style={secLbl()}>結果</div>
-          <div style={{display:"flex",gap:"6px"}}>
-            {[{label:"✅ 的中",v:"hit"},{label:"❌ ハズレ",v:"miss"},{label:"⏭ 見送り",v:"skip"}].map(opt=>{
-              const active=opt.v==="hit"?hit:opt.v==="skip"?skip:!hit&&!skip;
-              const col=opt.v==="hit"?C.green:opt.v==="skip"?C.textMuted:C.red;
-              return(<button key={opt.v} onClick={()=>{setHit(opt.v==="hit");setSkip(opt.v==="skip");}} style={{
-                flex:1,padding:"7px 0",borderRadius:"6px",fontSize:"11px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit",
-                background:active?(opt.v==="hit"?"#0d3b2a":opt.v==="skip"?"#1a1a2a":"#3b0d0d"):"transparent",
-                border:`1.5px solid ${active?col:C.border}`,color:active?col:C.textMuted,
-              }}>{opt.label}</button>);
-            })}
-          </div>
-        </div>
-        {!skip&&<>
-          <div style={{marginBottom:"10px"}}>
-            <label style={{...secLbl(),display:"block"}}>投資額（円）</label>
-            <input value={betAmt} onChange={e=>setBetAmt(e.target.value)} type="number" placeholder="例：3000" style={inp({})}/>
-          </div>
-          {hit&&<div style={{marginBottom:"10px"}}>
-            <label style={{...secLbl(),display:"block"}}>払戻額（円）</label>
-            <input value={retAmt} onChange={e=>setRetAmt(e.target.value)} type="number" placeholder="例：18000" style={inp({})}/>
-          </div>}
-        </>}
-        <div style={{marginBottom:"14px"}}>
-          <label style={{...secLbl(),display:"block"}}>メモ</label>
-          <input value={memo} onChange={e=>setMemo(e.target.value)} placeholder="気づきを記録…" style={inp({})}/>
-        </div>
-        <div style={{display:"flex",gap:"8px"}}>
-          <button onClick={()=>onSave({
-            id:Date.now(),date:new Date().toLocaleDateString("ja-JP"),
-            raceTitle,hit,skip,betAmount:parseInt(betAmt)||0,returnAmount:parseInt(retAmt)||0,
-            memo,bets:result.bets||[],anaBets:result.anaBets||[],anaMode:result.anaMode,actualResult:null,
-          })} style={btnSt(`linear-gradient(135deg,${C.gold},#e07b00)`,"#080d18",{flex:1,fontWeight:"800"})}>
-            保存する
-          </button>
-          <button onClick={onClose} style={btnSt("transparent",C.textMuted,{border:`1px solid ${C.border}`})}>キャンセル</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── HistoryPanel ─────────────────────────────────────────
-function HistoryPanel({history,onDelete,onUpdate}){
-  const [checkTarget,setCheckTarget]=useState(null);
-  const decided=history.filter(h=>!h.skip);
-  const hits=history.filter(h=>h.hit).length;
-  const totalBet=history.reduce((s,h)=>s+(h.betAmount||0),0);
-  const totalRet=history.reduce((s,h)=>s+(h.returnAmount||0),0);
-  const roi=totalBet>0?(((totalRet-totalBet)/totalBet)*100).toFixed(1):null;
-  const pending=history.filter(h=>!h.skip&&h.actualResult===null).length;
-  return(
-    <div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"8px",marginBottom:"14px"}}>
-        {[
-          {label:"総レース数",value:history.length,color:C.blue},
-          {label:"的中回数",value:`${hits}回`,color:C.green},
-          {label:"的中率",value:decided.length>0?`${((hits/decided.length)*100).toFixed(0)}%`:"—",color:C.gold},
-          {label:"収支率",value:roi!==null?`${parseFloat(roi)>0?"+":""}${roi}%`:"—",
-            color:roi===null?C.textMuted:parseFloat(roi)>0?C.green:C.red},
-        ].map(s=>(<div key={s.label} style={cardSt({marginBottom:0,padding:"12px 10px",textAlign:"center"})}>
-          <div style={{fontSize:"20px",fontWeight:"800",color:s.color}}>{s.value}</div>
-          <div style={{fontSize:"9px",color:C.textMuted,marginTop:"3px"}}>{s.label}</div>
-        </div>))}
-      </div>
-      {pending>0&&(<div style={{padding:"9px 14px",marginBottom:"12px",borderRadius:"8px",
-        background:"#0d1a10",border:`1px solid ${C.teal}`,display:"flex",alignItems:"center",gap:"8px"}}>
-        <span style={{fontSize:"16px"}}>🔍</span>
-        <span style={{fontSize:"12px",color:C.teal,fontWeight:"700"}}>結果未入力のレースが{pending}件あります。</span>
-      </div>)}
-      {history.length===0&&(<div style={cardSt({textAlign:"center",color:C.textMuted,padding:"40px 20px"})}>
-        まだ記録がありません。<br/><span style={{fontSize:"11px",color:C.textDim}}>レース分析後に「記録に追加 →」で保存できます</span>
-      </div>)}
-      {history.map(h=>{
-        const col=h.hit?C.green:h.skip?C.textDim:h.actualResult===null?C.orange:C.red;
-        const statusLabel=h.skip?"⏭ 見送り":h.actualResult===null?"⏳ 未照合":h.hit?"✅ 的中":"❌ ハズレ";
-        return(<div key={h.id} style={cardSt({borderLeft:`4px solid ${col}`,marginBottom:"8px"})}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-            <div style={{flex:1}}>
-              <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"5px",flexWrap:"wrap"}}>
-                <span style={{padding:"2px 8px",borderRadius:"20px",fontSize:"10px",fontWeight:"700",
-                  background:h.hit?"#0d3b2a":h.skip?"#1a1a2a":h.actualResult===null?"#201000":"#3b0d0d",
-                  color:col,border:`1px solid ${col}`}}>{statusLabel}</span>
-                {h.anaMode&&<span style={{...tag("#200d30",C.purple)}}>穴狙い</span>}
-                <span style={{fontSize:"10px",color:C.textMuted}}>{h.date}</span>
-              </div>
-              <div style={{fontSize:"14px",fontWeight:"700",color:C.textPrimary,marginBottom:"3px"}}>{h.raceTitle||"無題レース"}</div>
-              {h.actualResult&&(<div style={{fontSize:"11px",color:C.textMuted,marginBottom:"2px"}}>
-                実際の結果：<span style={{color:C.gold,fontWeight:"700",marginLeft:"3px"}}>{h.actualResult.r1}−{h.actualResult.r2}−{h.actualResult.r3}</span>
-              </div>)}
-              {h.betAmount>0&&(<div style={{fontSize:"11px",color:C.textMuted}}>
-                投資 {h.betAmount.toLocaleString()}円
-                {h.returnAmount>0&&<span style={{color:h.returnAmount>h.betAmount?C.green:C.red,marginLeft:"6px"}}>
-                  → 払戻 {h.returnAmount.toLocaleString()}円（{h.returnAmount>h.betAmount?"+":""}{(h.returnAmount-h.betAmount).toLocaleString()}円）
-                </span>}
-              </div>)}
-              {h.bets&&h.bets.length>0&&(<div style={{display:"flex",flexWrap:"wrap",gap:"4px",marginTop:"6px"}}>
-                {h.bets.slice(0,6).map((b,bi)=>{
-                  const isActual=h.actualResult&&`${h.actualResult.r1}-${h.actualResult.r2}-${h.actualResult.r3}`===b;
-                  return(<span key={bi} style={{padding:"2px 7px",borderRadius:"4px",fontSize:"11px",fontWeight:"700",
-                    background:isActual?"#0a3020":"#0d1a30",color:isActual?C.green:C.gold,border:`1px solid ${isActual?C.green:C.goldDim}`}}>{b}</span>);
-                })}
-                {h.bets.length>6&&<span style={{fontSize:"10px",color:C.textMuted,padding:"2px 0"}}>…他{h.bets.length-6}点</span>}
-              </div>)}
-            </div>
-            <div style={{display:"flex",flexDirection:"column",gap:"5px",alignItems:"flex-end",marginLeft:"8px"}}>
-              {!h.skip&&(<button onClick={()=>setCheckTarget(h)} style={btnSt(
-                h.actualResult===null?"#0a2028":C.card,
-                h.actualResult===null?C.teal:C.textMuted,
-                {fontSize:"10px",padding:"4px 9px",border:`1px solid ${h.actualResult===null?C.teal:C.border}`}
-              )}>{h.actualResult===null?"🔍 的中チェック":"🔄 再チェック"}</button>)}
-              <button onClick={()=>onDelete(h.id)} style={{background:"transparent",border:"none",color:C.textDim,cursor:"pointer",fontSize:"13px",padding:"3px 6px"}}>🗑</button>
-            </div>
-          </div>
-        </div>);
-      })}
-      {checkTarget&&(<HitCheckModal entry={checkTarget} onClose={()=>setCheckTarget(null)}
-        onUpdateEntry={updated=>{onUpdate(updated);setCheckTarget(null);}}/>)}
-    </div>
-  );
-}
-
-// ─── 精度分析 ─────────────────────────────────────────────
-function AccuracyPanel({history}){
-  const decided=history.filter(h=>!h.skip&&h.actualResult!==null);
-  if(decided.length===0){return(<div style={cardSt({textAlign:"center",color:C.textMuted,padding:"40px 20px"})}>
-    まだ照合済みのレースがありません。<br/><span style={{fontSize:"11px",color:C.textDim}}>「的中チェック」を実行するとここに精度データが蓄積されます。</span>
-  </div>);}
-  const total=decided.length;
-  const hits=decided.filter(h=>h.hit).length;
-  const normalHits=decided.filter(h=>h.normalHit).length;
-  const anaHits=decided.filter(h=>h.anaHit&&!h.normalHit).length;
-  const totalBet=decided.reduce((s,h)=>s+(h.betAmount||0),0);
-  const totalRet=decided.reduce((s,h)=>s+(h.returnAmount||0),0);
-  const roi=totalBet>0?(((totalRet-totalBet)/totalBet)*100).toFixed(1):null;
-  const byMonth={};
-  decided.forEach(h=>{
-    const m=h.date?h.date.substring(0,7):"不明";
-    if(!byMonth[m])byMonth[m]={total:0,hits:0,bet:0,ret:0};
-    byMonth[m].total++;if(h.hit)byMonth[m].hits++;
-    byMonth[m].bet+=h.betAmount||0;byMonth[m].ret+=h.returnAmount||0;
-  });
-  const months=Object.entries(byMonth).sort((a,b)=>a[0]<b[0]?1:-1);
-  const Bar=({label,value,max,color})=>{
-    const pct=max>0?(value/max)*100:0;
-    return(<div style={{marginBottom:"8px"}}>
-      <div style={{display:"flex",justifyContent:"space-between",marginBottom:"3px"}}>
-        <span style={{fontSize:"11px",color:C.textMuted}}>{label}</span>
-        <span style={{fontSize:"11px",fontWeight:"700",color}}>{value}</span>
-      </div>
-      <div style={{height:"5px",background:C.textDim,borderRadius:"3px",overflow:"hidden"}}>
-        <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:"3px",transition:"width 0.5s ease"}}/>
-      </div>
-    </div>);
-  };
-  return(<div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"8px",marginBottom:"14px"}}>
-      {[
-        {label:"照合済みレース",value:total,color:C.blue,sub:"件"},
-        {label:"通常買い目的中率",value:`${((normalHits/total)*100).toFixed(0)}%`,color:C.green,sub:`${normalHits}/${total}回`},
-        {label:"穴狙い追加的中",value:anaHits,color:C.purple,sub:"回"},
-      ].map(s=>(<div key={s.label} style={cardSt({marginBottom:0,padding:"12px 10px",textAlign:"center"})}>
-        <div style={{fontSize:"22px",fontWeight:"900",color:s.color}}>{s.value}</div>
-        <div style={{fontSize:"9px",color:C.textMuted,marginTop:"2px"}}>{s.label}</div>
-        <div style={{fontSize:"9px",color:C.textDim,marginTop:"1px"}}>{s.sub}</div>
-      </div>))}
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"12px"}}>
-      <div style={cardSt()}>
-        <div style={secLbl()}>的中内訳</div>
-        <Bar label="通常買い目的中" value={normalHits} max={total} color={C.green}/>
-        <Bar label="穴狙い的中" value={anaHits} max={total} color={C.purple}/>
-        <Bar label="ハズレ" value={total-hits} max={total} color={C.red}/>
-        <div style={{marginTop:"10px",padding:"8px",background:"#030608",borderRadius:"7px",textAlign:"center"}}>
-          <div style={{fontSize:"10px",color:C.textMuted,marginBottom:"2px"}}>総合的中率</div>
-          <div style={{fontSize:"24px",fontWeight:"900",color:hits/total>=0.3?C.green:C.orange}}>
-            {((hits/total)*100).toFixed(0)}%
-          </div>
-        </div>
-      </div>
-      <div style={cardSt()}>
-        <div style={secLbl()}>収支</div>
-        {[
-          {label:"総投資額",value:`${totalBet.toLocaleString()}円`,color:C.textPrimary},
-          {label:"総払戻額",value:`${totalRet.toLocaleString()}円`,color:totalRet>totalBet?C.green:C.red},
-          {label:"損益",value:`${totalRet-totalBet>=0?"+":""}${(totalRet-totalBet).toLocaleString()}円`,color:totalRet-totalBet>=0?C.green:C.red},
-        ].map(s=>(<div key={s.label} style={{display:"flex",justifyContent:"space-between",
-          padding:"6px 8px",background:"#030608",borderRadius:"6px",marginBottom:"5px"}}>
-          <span style={{fontSize:"11px",color:C.textMuted}}>{s.label}</span>
-          <span style={{fontSize:"12px",fontWeight:"700",color:s.color}}>{s.value}</span>
-        </div>))}
-        {roi!==null&&(<div style={{padding:"8px",borderRadius:"7px",textAlign:"center",
-          background:parseFloat(roi)>0?"#0a2a1a":"#2a0a0a",border:`1px solid ${parseFloat(roi)>0?C.green:C.red}`}}>
-          <div style={{fontSize:"10px",color:C.textMuted,marginBottom:"2px"}}>回収率</div>
-          <div style={{fontSize:"22px",fontWeight:"900",color:parseFloat(roi)>0?C.green:C.red}}>
-            {parseFloat(roi)>0?"+":""}{roi}%
-          </div>
-        </div>)}
-      </div>
-    </div>
-    {months.length>0&&(<div style={cardSt()}>
-      <div style={secLbl()}>月別成績</div>
-      <div style={{overflowX:"auto"}}>
-        <table style={{width:"100%",borderCollapse:"collapse",fontSize:"11px"}}>
-          <thead><tr>{["月","レース","的中","的中率","投資","払戻","損益"].map(h=>(
-            <th key={h} style={{padding:"6px 8px",color:C.textMuted,fontWeight:"600",
-              textAlign:"right",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>
-          ))}</tr></thead>
-          <tbody>{months.map(([m,d])=>{
-            const hr=d.total>0?((d.hits/d.total)*100).toFixed(0):0;
-            const pl=d.ret-d.bet;
-            return(<tr key={m} style={{borderBottom:`1px solid ${C.textDim}`}}>
-              <td style={{padding:"7px 8px",color:C.textPrimary,fontWeight:"700"}}>{m}</td>
-              <td style={{padding:"7px 8px",color:C.textMuted,textAlign:"right"}}>{d.total}</td>
-              <td style={{padding:"7px 8px",color:C.green,textAlign:"right",fontWeight:"700"}}>{d.hits}</td>
-              <td style={{padding:"7px 8px",textAlign:"right",fontWeight:"700",color:parseInt(hr)>=30?C.green:C.orange}}>{hr}%</td>
-              <td style={{padding:"7px 8px",color:C.textMuted,textAlign:"right"}}>{d.bet.toLocaleString()}</td>
-              <td style={{padding:"7px 8px",color:d.ret>d.bet?C.green:C.red,textAlign:"right"}}>{d.ret.toLocaleString()}</td>
-              <td style={{padding:"7px 8px",fontWeight:"700",textAlign:"right",color:pl>=0?C.green:C.red}}>{pl>=0?"+":""}{pl.toLocaleString()}</td>
-            </tr>);
-          })}</tbody>
-        </table>
-      </div>
-    </div>)}
-    <div style={cardSt({background:"#030e0a",border:`1px solid #1a3020`})}>
-      <div style={secLbl(C.teal)}>📈 精度向上のヒント</div>
-      <div style={{fontSize:"11px",color:C.textMuted,lineHeight:"2"}}>
-        {hits/total>=0.35?<span style={{color:C.green}}>✅ 的中率35%以上を維持中。現在のロジックは適切です。</span>
-          :<span style={{color:C.orange}}>⚠ 的中率が低め。差し型・若手候補の見逃しがないか確認を。</span>}
-        <br/>
-        {anaHits>0?<span style={{color:C.purple}}>🎰 穴狙い買い目が{anaHits}回追加的中しています。</span>
-          :<span>穴狙い実績がまだありません。</span>}
-        <br/>
-        <span style={{color:C.textDim}}>※ 目標：3,000〜10,000円の中穴帯を安定して取ること（現在{total}件蓄積）</span>
-      </div>
-    </div>
-  </div>);
-}
-
-// ─── メイン ───────────────────────────────────────────────
+// ==================== MAIN APP ====================
 export default function App() {
-  const [tab,setTab]             = useState(0);
-  const [riders,setRiders]       = useState(makeDefaultRiders());
-  const [prizeLevel,setPrizeLevel] = useState("normal"); // normal/finals/a3
-  const [anaMode,setAnaMode]     = useState(false);
-  const [raceTitle,setRaceTitle] = useState("");
-  const [result,setResult]       = useState(null);
-  const [history,setHistory]     = useState([]);
-  const [showSave,setShowSave]   = useState(false);
-  const [showImport,setShowImport] = useState(false);
-  const [importMsg,setImportMsg] = useState("");
+  const [tab, setTab] = useState("input");
+  const [raceName, setRaceName] = useState("");
+  const [prizeLevel, setPrizeLevel] = useState("yosen");
+  const [players, setPlayers] = useState(
+    Array(9).fill(null).map(() => ({ ...EMPTY_PLAYER }))
+  );
+  const [result, setResult] = useState(null);
+  const [history, setHistory] = useState([]);
 
-  const updateRider = useCallback(u => setRiders(p => p.map(r => r.id===u.id?u:r)), []);
-  const removeRider = useCallback(id => setRiders(p => p.filter(r => r.id!==id)), []);
-  const addRider    = () => setRiders(p => [...p, makeRider(p.length+1)]);
-  const reset       = () => { setResult(null); setRiders(makeDefaultRiders()); setRaceTitle(""); setImportMsg(""); };
-  const getLC       = id => { const i=LINE_IDS.indexOf(id); return i>=0?LINE_COLORS[i]:null; };
-  const runAnalysis = () => setResult(analyze(riders, prizeLevel, anaMode));
-  const handleSave  = entry => { setHistory(p=>[entry,...p]); setShowSave(false); };
-  const handleUpdate= updated => setHistory(p => p.map(h => h.id===updated.id?updated:h));
-  const pending     = history.filter(h=>!h.skip&&h.actualResult===null).length;
+  const LINE_COLORS = ["bg-red-500", "bg-blue-500", "bg-yellow-500", "bg-green-500", "bg-purple-500", "bg-pink-500"];
 
-  const handleImport = json => {
-    const newRiders = json.riders.map((r,i) => ({
-      ...makeRider(r.number||i+1), ...r, id:Date.now()+Math.random(),
-    }));
-    setRiders(newRiders);
-    if (json.raceTitle) setRaceTitle(json.raceTitle);
-    setResult(null);
-    setImportMsg(`✅ ${json.riders.length}名をインポートしました。勝率・差し回数・期別などを補完してください。`);
-    setShowImport(false);
+  const updatePlayer = useCallback((idx, key, val) => {
+    setPlayers(ps => ps.map((p, i) => i === idx ? { ...p, [key]: val } : p));
+  }, []);
+
+  const addPlayer = () => {
+    if (players.length < 9) setPlayers(ps => [...ps, { ...EMPTY_PLAYER }]);
   };
 
-  const colHeaders = ["#","選手名","府県","勝率%","3連%","試合","期","B","逃","捲","差","マ","ライン","位置",""];
+  const removePlayer = (idx) => {
+    if (players.length > 3) setPlayers(ps => ps.filter((_, i) => i !== idx));
+  };
+
+  const analyze = () => {
+    const res = analyzeRace(players, prizeLevel, true);
+    setResult(res);
+    setTab("result");
+  };
+
+  const reset = () => {
+    setPlayers(Array(9).fill(null).map(() => ({ ...EMPTY_PLAYER })));
+    setResult(null);
+    setRaceName("");
+    setTab("input");
+  };
+
+  const TABS = [
+    { id: "input", label: "入力", icon: "📝" },
+    { id: "result", label: "分析", icon: "🎯" },
+    { id: "history", label: "記録", icon: "📊" },
+  ];
 
   return (
-    <div style={{fontFamily:"'Noto Sans JP',sans-serif",minHeight:"100vh",background:C.bg,color:C.textPrimary}}>
-
+    <div className="min-h-screen bg-gray-950 text-white">
       {/* Header */}
-      <div style={{
-        background:"linear-gradient(180deg,#090f1e 0%,#07090f 100%)",
-        borderBottom:`1px solid ${C.border}`,
-        padding:"13px 18px", display:"flex", alignItems:"center", gap:"12px",
-      }}>
-        <div style={{
-          width:"38px", height:"38px",
-          background:`linear-gradient(135deg,${C.gold},#c06800)`,
-          borderRadius:"9px", display:"flex", alignItems:"center", justifyContent:"center",
-          fontSize:"19px", boxShadow:`0 3px 12px rgba(240,180,40,0.3)`, flexShrink:0,
-        }}>🚴</div>
-        <div>
-          <div style={{fontSize:"17px",fontWeight:"900",color:C.gold,letterSpacing:"0.06em"}}>KEIRIN SCOUT</div>
-          <div style={{fontSize:"9px",color:C.textMuted,marginTop:"1px",letterSpacing:"0.1em"}}>競輪予想 完全統合版 v2.0</div>
-        </div>
-        <div style={{marginLeft:"auto",display:"flex",gap:"3px"}}>
-          {TABS.map((t,i)=>(
-            <button key={i} onClick={()=>setTab(i)} style={{
-              padding:"6px 11px",borderRadius:"6px",fontSize:"11px",fontWeight:"700",
-              cursor:"pointer",fontFamily:"inherit",position:"relative",
-              background:tab===i?C.gold:"transparent",
-              color:tab===i?"#070910":C.textMuted,
-              border:tab===i?"none":`1px solid ${C.border}`,
-            }}>
-              {t}
-              {i===1&&pending>0&&(<span style={{
-                position:"absolute",top:"-4px",right:"-4px",
-                width:"13px",height:"13px",borderRadius:"50%",
-                background:C.orange,color:"#fff",fontSize:"8px",fontWeight:"900",
-                display:"flex",alignItems:"center",justifyContent:"center",
-              }}>{pending}</span>)}
-            </button>
-          ))}
+      <div className="bg-gray-900 border-b border-gray-800 px-4 py-3 sticky top-0 z-20">
+        <div className="flex items-center justify-between max-w-lg mx-auto">
+          <div>
+            <div className="text-yellow-400 font-black text-lg tracking-wider">⚡ KEIRIN SCOUT</div>
+            <div className="text-gray-500 text-xs">中穴特化・v3.0</div>
+          </div>
+          <div className="flex gap-1">
+            {TABS.map(t => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  tab === t.id
+                    ? "bg-yellow-500 text-gray-900"
+                    : "bg-gray-800 text-gray-400 hover:text-white"
+                }`}
+              >
+                {t.icon} {t.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div style={{padding:"16px 18px",maxWidth:"1100px",margin:"0 auto"}}>
-
-        {/* ── TAB 0: レース入力 ── */}
-        {tab===0&&<>
-          {/* レース設定 */}
-          <div style={cardSt()}>
-            <div style={secLbl()}>レース設定</div>
-            <div style={{display:"flex",gap:"10px",flexWrap:"wrap",alignItems:"flex-end"}}>
-              <div style={{flex:"3",minWidth:"200px"}}>
-                <label style={{...secLbl(),display:"block"}}>レース名</label>
-                <input value={raceTitle} onChange={e=>setRaceTitle(e.target.value)}
-                  placeholder="例：川崎 第8R S級選抜" style={inp({})}/>
-              </div>
-              <div style={{minWidth:"160px"}}>
-                <label style={{...secLbl(),display:"block"}}>賞金レベル</label>
-                <select value={prizeLevel} onChange={e=>setPrizeLevel(e.target.value)} style={sel()}>
-                  <option value="normal">予選級（10万円以下）</option>
-                  <option value="finals">決勝級（20万円以上）</option>
-                  <option value="a3">A3チャレンジ予選</option>
-                </select>
-              </div>
-              <button onClick={()=>setAnaMode(v=>!v)} style={{
-                padding:"7px 14px",borderRadius:"7px",fontSize:"12px",fontWeight:"700",
-                cursor:"pointer",fontFamily:"inherit",
-                background:anaMode?"#200d30":"transparent",
-                color:anaMode?C.purple:C.textMuted,
-                border:`1.5px solid ${anaMode?C.purple:C.border}`,
-                display:"flex",alignItems:"center",gap:"5px",
-              }}><span>🎰</span><span>穴狙い {anaMode?"ON":"OFF"}</span></button>
-            </div>
-
-            {/* 拡張機能インポートバナー */}
-            <div style={{
-              marginTop:"12px",padding:"9px 12px",
-              background:"linear-gradient(135deg,#040c18,#081220)",
-              border:`1px solid ${C.teal}`,borderRadius:"8px",
-              display:"flex",alignItems:"center",justifyContent:"space-between",gap:"10px",
-            }}>
+      <div className="max-w-lg mx-auto px-4 py-4 pb-24">
+        {/* INPUT TAB */}
+        {tab === "input" && (
+          <div>
+            {/* Race Info */}
+            <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4 mb-4">
+              <div className="text-gray-300 text-sm font-bold mb-2">レース情報</div>
+              <input
+                value={raceName}
+                onChange={e => setRaceName(e.target.value)}
+                placeholder="例：川崎 第6R 3級選抜"
+                className="w-full bg-gray-700/50 border border-gray-600/50 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-500 mb-2"
+              />
               <div>
-                <div style={{fontSize:"11px",fontWeight:"700",color:C.teal,marginBottom:"1px"}}>📥 Chrome拡張機能と連携</div>
-                <div style={{fontSize:"9px",color:C.textMuted}}>KEIRIN.jp / Gamboo の出走表を1クリックで自動入力</div>
-              </div>
-              <button onClick={()=>setShowImport(true)} style={btnSt(
-                `linear-gradient(135deg,${C.teal},#16a085)`,"#050d10",
-                {fontSize:"11px",fontWeight:"800",padding:"6px 12px",whiteSpace:"nowrap",flexShrink:0}
-              )}>貼り付けインポート</button>
-            </div>
-            {importMsg&&(<div style={{marginTop:"8px",padding:"7px 10px",background:"#0a2a1a",
-              border:`1px solid ${C.green}`,borderRadius:"6px",fontSize:"11px",color:C.green}}>{importMsg}</div>)}
-          </div>
-
-          {/* 列ヘッダー */}
-          <div style={{
-            display:"grid",
-            gridTemplateColumns:"28px 90px 54px 44px 44px 44px 44px 36px 36px 36px 36px 36px 40px 76px 24px",
-            gap:"3px",padding:"3px 8px",marginBottom:"2px",
-          }}>
-            {colHeaders.map((h,i)=>(
-              <div key={i} style={{fontSize:"9px",color:C.textDim,textAlign:"center"}}>{h}</div>
-            ))}
-          </div>
-
-          {riders.map(r=>(
-            <RiderRow key={r.id} rider={r} onChange={updateRider} onRemove={()=>removeRider(r.id)} lineColor={getLC(r.lineId)}/>
-          ))}
-
-          {/* ライン凡例 */}
-          <div style={{display:"flex",gap:"5px",flexWrap:"wrap",marginTop:"7px",marginBottom:"12px"}}>
-            {LINE_COLORS.map((lc,i)=>(
-              <div key={i} style={{padding:"2px 9px",background:lc.bg,border:`1px solid ${lc.border}`,
-                borderRadius:"20px",fontSize:"9px",color:lc.text,fontWeight:"700"}}>{lc.label}</div>
-            ))}
-          </div>
-
-          {/* ボタン */}
-          <div style={{display:"flex",gap:"7px",marginBottom:"20px",flexWrap:"wrap"}}>
-            <button onClick={addRider} style={btnSt(C.card,C.textMuted,{border:`1px solid ${C.border}`})}>＋ 選手追加</button>
-            <button onClick={runAnalysis} style={btnSt(`linear-gradient(135deg,${C.gold},#c06800)`,"#070910",{
-              fontWeight:"900",boxShadow:`0 3px 14px rgba(240,180,40,0.25)`})}>🔍 分析する</button>
-            <button onClick={reset} style={btnSt("transparent",C.textDim,{border:`1px solid #151f30`})}>リセット</button>
-          </div>
-
-          {/* ── 分析結果 ── */}
-          {result&&(
-            <div style={{animation:"fadeIn 0.3s ease"}}>
-
-              {/* 判定バナー */}
-              <div style={{
-                padding:"13px 16px",borderRadius:"10px",marginBottom:"12px",
-                background:result.raceWorth?"linear-gradient(135deg,#081a10,#0a2518)":"linear-gradient(135deg,#180808,#200a0a)",
-                border:`1.5px solid ${result.verdictColor}`,
-                display:"flex",alignItems:"center",justifyContent:"space-between",
-              }}>
-                <div>
-                  <div style={{fontWeight:"800",fontSize:"15px",color:result.verdictColor}}>{result.verdict}</div>
-                  <div style={{fontSize:"10px",color:C.textMuted,marginTop:"2px"}}>
-                    {raceTitle||"無題レース"} ／ {prizeLevel==="finals"?"決勝級":prizeLevel==="a3"?"A3予選":"予選級"}
-                    {result.anaMode&&<span style={{color:C.purple,marginLeft:"6px"}}>穴狙いモード</span>}
-                  </div>
-                </div>
-                {result.raceWorth&&(
-                  <button onClick={()=>setShowSave(true)} style={btnSt(C.gold,"#070910",{fontSize:"11px",fontWeight:"800",padding:"6px 12px"})}>
-                    記録に追加 →
-                  </button>
-                )}
-              </div>
-
-              {/* 警告・注意 */}
-              {result.warnings.length>0&&(
-                <div style={cardSt({background:"#0d0a02",border:`1px solid #3a2800`,marginBottom:"12px"})}>
-                  <div style={secLbl()}>判定メモ</div>
-                  {result.warnings.map((w,i)=>(
-                    <div key={i} style={{fontSize:"11px",color:"#d4960a",padding:"3px 0",borderBottom:`1px solid #1a1200`}}>{w}</div>
+                <div className="text-gray-400 text-xs mb-1">賞金レベル</div>
+                <div className="flex gap-2">
+                  {[
+                    ["yosen", "予選級（10万円以下）", "穴狙い全開"],
+                    ["final", "決勝級（20万円以上）", "本命線厚め"],
+                    ["skip", "A3チャレンジ予選", "見送り推奨"],
+                  ].map(([val, label, note]) => (
+                    <button
+                      key={val}
+                      onClick={() => setPrizeLevel(val)}
+                      className={`flex-1 rounded-lg p-2 text-xs font-bold border transition-all ${
+                        prizeLevel === val
+                          ? "bg-yellow-500/20 border-yellow-500/60 text-yellow-300"
+                          : "bg-gray-700/40 border-gray-600/40 text-gray-400 hover:text-white"
+                      }`}
+                    >
+                      <div>{label}</div>
+                      <div className="text-gray-500 font-normal mt-0.5">{note}</div>
+                    </button>
                   ))}
                 </div>
-              )}
-              {result.issues.length>0&&(
-                <div style={cardSt({background:"#0d0a02",border:`1px solid #3a2800`,marginBottom:"12px"})}>
-                  <div style={secLbl()}>注意事項</div>
-                  {result.issues.map((iss,i)=>(
-                    <div key={i} style={{fontSize:"11px",color:"#e0a020",padding:"3px 0"}}>{iss}</div>
-                  ))}
-                </div>
-              )}
-
-              {result.raceWorth&&<>
-                {/* 頭候補 */}
-                {result.candidatesFirst.length>0&&(
-                  <div style={cardSt({marginBottom:"12px"})}>
-                    <div style={secLbl()}>🎯 頭候補（優先順）</div>
-                    {result.candidatesFirst.map((c,i)=>(
-                      <div key={i} style={{
-                        display:"flex",alignItems:"center",gap:"8px",
-                        padding:"7px 10px",marginBottom:"4px",borderRadius:"7px",
-                        background:i===0?"linear-gradient(135deg,#0d2010,#102818)":"#070c14",
-                        borderLeft:`3px solid ${i===0?C.gold:i===1?C.orange:C.textMuted}`,
-                      }}>
-                        <span style={{
-                          width:"20px",height:"20px",borderRadius:"50%",flexShrink:0,
-                          background:i===0?`linear-gradient(135deg,${C.gold},#c06800)`:i===1?`linear-gradient(135deg,${C.orange},#c05000)`:"#1a2030",
-                          color:i<=1?"#070910":C.textMuted,
-                          fontSize:"10px",fontWeight:"900",
-                          display:"flex",alignItems:"center",justifyContent:"center",
-                        }}>{i+1}</span>
-                        <span style={{fontWeight:"900",color:C.gold,fontSize:"15px",width:"22px",textAlign:"center"}}>
-                          {c.rider.number}
-                        </span>
-                        <span style={{fontSize:"13px",fontWeight:"700",flex:1}}>{c.rider.name||"—"}</span>
-                        <span style={{fontSize:"10px",color:C.textMuted}}>{c.rider.pref}</span>
-                        <span style={{...tag(
-                          i===0?"#0d2a10":i===1?"#1a1200":"#0d1020",
-                          i===0?C.green:i===1?C.gold:C.textMuted
-                        )}}>{c.reason}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* 3着候補 */}
-                {result.candidatesThird.length>0&&(
-                  <div style={cardSt({marginBottom:"12px"})}>
-                    <div style={secLbl()}>3着候補（総流し対象）</div>
-                    <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
-                      {result.candidatesThird.map((c,i)=>(
-                        <div key={i} style={{
-                          display:"flex",alignItems:"center",gap:"5px",
-                          padding:"5px 10px",borderRadius:"6px",
-                          background:"#070c14",border:`1px solid ${C.border}`,
-                        }}>
-                          <span style={{fontWeight:"900",color:C.gold,fontSize:"13px"}}>{c.rider.number}</span>
-                          <span style={{fontSize:"12px"}}>{c.rider.name||"—"}</span>
-                          <span style={{fontSize:"9px",color:C.textMuted}}>{c.reason}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 推奨買い目 */}
-                {result.bets.length>0&&(
-                  <div style={cardSt()}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
-                      <div style={secLbl()}>🎯 推奨買い目（3連単）</div>
-                      <span style={{...tag(
-                        result.bets.length<=15?"#0d3b2a":"#3b1a0d",
-                        result.bets.length<=15?C.green:C.orange
-                      )}}>{result.bets.length}点</span>
-                    </div>
-                    <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
-                      {result.bets.map((bet,i)=>(
-                        <div key={i} style={{
-                          padding:"6px 11px",background:"#0a1428",
-                          border:`1px solid ${C.goldDim}`,borderRadius:"6px",
-                          fontSize:"13px",fontWeight:"800",color:C.gold,
-                          fontVariantNumeric:"tabular-nums",
-                        }}>{bet}</div>
-                      ))}
-                    </div>
-                    <div style={{marginTop:"8px",fontSize:"9px",color:C.textDim,lineHeight:"1.8"}}>
-                      ※ 目標配当：3,000〜10,000円の中穴帯 ／ 最大15点 ／ 投票は自己責任で
-                    </div>
-                  </div>
-                )}
-
-                {/* 穴狙い買い目 */}
-                {result.anaBets&&result.anaBets.length>0&&(
-                  <div style={cardSt({border:`1px solid ${C.purple}`,background:"#0a0514"})}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
-                      <div style={secLbl(C.purple)}>🎰 穴狙い買い目（若手・差し型軸）</div>
-                      <span style={{...tag("#200d30",C.purple)}}>{result.anaBets.length}点</span>
-                    </div>
-                    <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
-                      {result.anaBets.map((bet,i)=>(
-                        <div key={i} style={{
-                          padding:"6px 11px",background:"#140828",
-                          border:"1px solid #4a1a6a",borderRadius:"6px",
-                          fontSize:"13px",fontWeight:"800",color:C.purple,
-                          fontVariantNumeric:"tabular-nums",
-                        }}>{bet}</div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </>}
+              </div>
             </div>
-          )}
-        </>}
 
-        {tab===1&&<HistoryPanel history={history} onDelete={id=>setHistory(p=>p.filter(h=>h.id!==id))} onUpdate={handleUpdate}/>}
-        {tab===2&&<AccuracyPanel history={history}/>}
+            {/* Players */}
+            <div className="text-gray-300 text-sm font-bold mb-2">
+              選手データ（{players.length}名）
+            </div>
+            {players.map((p, i) => (
+              <PlayerRow
+                key={i}
+                player={p}
+                idx={i}
+                onChange={(key, val) => updatePlayer(i, key, val)}
+                onRemove={() => removePlayer(i)}
+                lineColor={LINE_COLORS[LINE_LABELS.indexOf(p.line)] || "bg-gray-500"}
+              />
+            ))}
+
+            {players.length < 9 && (
+              <button
+                onClick={addPlayer}
+                className="w-full border-2 border-dashed border-gray-700 hover:border-gray-500 text-gray-500 hover:text-gray-300 rounded-xl py-3 text-sm font-bold mb-4 transition-all"
+              >
+                ＋ 選手を追加
+              </button>
+            )}
+
+            <button
+              onClick={analyze}
+              className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-gray-900 font-black py-4 rounded-xl text-lg shadow-lg shadow-yellow-500/20 transition-all"
+            >
+              🔍 分析する
+            </button>
+            <button onClick={reset} className="w-full mt-2 text-gray-500 hover:text-gray-300 py-2 text-sm transition-colors">
+              リセット
+            </button>
+          </div>
+        )}
+
+        {/* RESULT TAB */}
+        {tab === "result" && (
+          <div>
+            {raceName && (
+              <div className="text-gray-400 text-sm mb-3">📍 {raceName}</div>
+            )}
+            {result ? (
+              <ResultPanel result={result} players={players} />
+            ) : (
+              <div className="text-center py-16 text-gray-500">
+                <div className="text-4xl mb-3">🔍</div>
+                <div className="text-sm">入力タブでデータを入力して<br />「分析する」を押してください</div>
+                <button onClick={() => setTab("input")} className="mt-4 bg-yellow-500 text-gray-900 font-bold px-6 py-2 rounded-lg text-sm">
+                  入力へ
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* HISTORY TAB */}
+        {tab === "history" && (
+          <HistoryTab history={history} setHistory={setHistory} />
+        )}
       </div>
 
-      {showSave&&result&&<SaveModal result={result} raceTitle={raceTitle} onSave={handleSave} onClose={()=>setShowSave(false)}/>}
-      {showImport&&<ImportModal onImport={handleImport} onClose={()=>setShowImport(false)}/>}
-
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;600;700;800;900&display=swap');
-        @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-        input:focus,select:focus{border-color:#4a9eff!important;box-shadow:0 0 0 2px rgba(74,158,255,0.1)}
-        *{box-sizing:border-box}
-        ::-webkit-scrollbar{width:4px}
-        ::-webkit-scrollbar-track{background:#07090f}
-        ::-webkit-scrollbar-thumb{background:#1a2840;border-radius:2px}
-      `}</style>
+      {/* Bottom Analyze Button (floating) */}
+      {tab === "input" && (
+        <div className="fixed bottom-0 left-0 right-0 bg-gray-950/90 backdrop-blur border-t border-gray-800 p-4">
+          <div className="max-w-lg mx-auto">
+            <button
+              onClick={analyze}
+              className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-gray-900 font-black py-3 rounded-xl text-base shadow-lg transition-all"
+            >
+              🔍 分析する
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
