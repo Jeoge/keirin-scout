@@ -563,6 +563,39 @@ export default function App() {
   );
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
+  const [importText, setImportText] = useState("");
+  const [showImport, setShowImport] = useState(false);
+  const [importMsg, setImportMsg] = useState("");
+
+  const handleImport = () => {
+    try {
+      const data = JSON.parse(importText.trim());
+      if (!Array.isArray(data) || data.length === 0) throw new Error("データが空です");
+      const imported = data.map((p, i) => ({
+        ...EMPTY_PLAYER,
+        name: p.name || "",
+        pref: p.pref || "",
+        grade: p.grade || "A1",
+        period: String(p.period || ""),
+        winRate: String(p.winRate || ""),
+        threeRate: String(p.threeRate || ""),
+        matches: String(p.matches || ""),
+        B: String(p.B || ""),
+        nige: String(p.nige || ""),
+        maki: String(p.maki || ""),
+        sashi: String(p.sashi || ""),
+        ma: String(p.ma || ""),
+        line: p.line || LINE_LABELS[i] || "A",
+        role: p.role || "先行",
+      }));
+      setPlayers(imported);
+      setImportMsg(`✅ ${imported.length}名を取り込みました！ライン・役割を確認してください`);
+      setImportText("");
+      setTimeout(() => { setShowImport(false); setImportMsg(""); }, 2000);
+    } catch (e) {
+      setImportMsg("❌ データの形式が正しくありません");
+    }
+  };
 
   const LINE_COLORS = ["bg-red-500", "bg-blue-500", "bg-yellow-500", "bg-green-500", "bg-purple-500", "bg-pink-500"];
 
@@ -628,6 +661,49 @@ export default function App() {
         {/* INPUT TAB */}
         {tab === "input" && (
           <div>
+            {/* Import Button */}
+            <div className="mb-4">
+              <button
+                onClick={() => setShowImport(v => !v)}
+                className="w-full bg-emerald-900/40 border border-emerald-600/50 hover:bg-emerald-800/40 text-emerald-300 font-bold py-3 rounded-xl text-sm transition-all"
+              >
+                📋 Chrome拡張データを貼り付けインポート
+              </button>
+              {showImport && (
+                <div className="mt-2 bg-gray-800/80 border border-emerald-600/40 rounded-xl p-3">
+                  <div className="text-emerald-300 text-xs font-bold mb-2">
+                    Chrome拡張で「コピー」したデータをここに貼り付け
+                  </div>
+                  <textarea
+                    value={importText}
+                    onChange={e => setImportText(e.target.value)}
+                    placeholder="拡張機能の「データをコピー」ボタンを押してからCtrl+Vで貼り付け"
+                    rows={4}
+                    className="w-full bg-gray-900 border border-gray-600/50 rounded-lg px-3 py-2 text-white text-xs placeholder-gray-600 resize-none mb-2 font-mono"
+                  />
+                  {importMsg && (
+                    <div className={`text-xs font-bold mb-2 ${importMsg.startsWith("✅") ? "text-emerald-400" : "text-red-400"}`}>
+                      {importMsg}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleImport}
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-lg text-sm transition-colors"
+                    >
+                      取り込む
+                    </button>
+                    <button
+                      onClick={() => { setShowImport(false); setImportText(""); setImportMsg(""); }}
+                      className="px-4 bg-gray-700 hover:bg-gray-600 text-gray-300 font-bold py-2 rounded-lg text-sm transition-colors"
+                    >
+                      閉じる
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Race Info */}
             <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4 mb-4">
               <div className="text-gray-300 text-sm font-bold mb-2">レース情報</div>
