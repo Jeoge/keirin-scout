@@ -686,7 +686,7 @@ export default function App() {
   const [raceName, setRaceName] = useState("");
   const [prizeLevel, setPrizeLevel] = useState("yosen");
   const [players, setPlayers] = useState(
-    Array(9).fill(null).map(() => ({ ...EMPTY_PLAYER }))
+    Array(7).fill(null).map(() => ({ ...EMPTY_PLAYER }))
   );
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
@@ -739,13 +739,19 @@ export default function App() {
   };
 
   const analyze = () => {
-    const res = analyzeRace(players, prizeLevel, true);
+    // 名前が入っている選手だけで分析
+    const activePlayers = players.filter(p => p.name.trim() !== "");
+    if (activePlayers.length < 3) {
+      alert("選手名を3人以上入力してください");
+      return;
+    }
+    const res = analyzeRace(activePlayers, prizeLevel, true);
     setResult(res);
     setTab("result");
   };
 
   const reset = () => {
-    setPlayers(Array(9).fill(null).map(() => ({ ...EMPTY_PLAYER })));
+    setPlayers(Array(7).fill(null).map(() => ({ ...EMPTY_PLAYER })));
     setResult(null);
     setRaceName("");
     setTab("input");
