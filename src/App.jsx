@@ -50,13 +50,23 @@ function analyzeRace(players, prizeLevel, anaModeOn) {
   // ── 若手120期以降 ──
   const youngsters = valid.filter(p => n(p.period) >= 120);
 
-  // ── 試合数・閾値に関わらず全員をスコアリングして頭候補選定 ──
-  // 役割による補正: 先行・両>番手>3番手（番手は頭になりにくい）
-  const roleBonus = { "先行": 1.0, "両": 0.9, "番手": 0.5, "3番手": 0.3, "4番手": 0.2 };
-  const scored = valid.map(p => ({
-    ...p,
-    score: (n(p.winRate) * 2 + n(p.threeRate) * 0.5 + n(p.B) * 3 + n(p.nige) * 2 + n(p.maki) * 1.5 + n(p.sashi) * 1 + n(p.ma) * 0.5) * (roleBonus[p.role] || 0.5)
-  })).sort((a, b) => b.score - a.score);
+  // ── スコアリング：役割・戦法を正確に反映 ──
+  // 先行型: B回数・逃回数を最重視
+  // 差し型: 差し回数・マ回数を重視（ただし番手に限定）
+  // 若手120期以降の先行は最優先
+  const roleBonus = { "先行": 1.0, "両": 0.85, "番手": 0.4, "3番手": 0.2, "4番手": 0.1 };
+  const scored = valid.map(p => {
+    const isSenko = p.role === "先行" || p.role === "両";
+    const isYoung = n(p.period) >= 120;
+    // 先行型スコア: B回数・逃回数・勝率を重視
+    const senkoScore = n(p.B) * 4 + n(p.nige) * 3 + n(p.maki) * 2 + n(p.winRate) * 1.5;
+    // 差し型スコア: 差し回数・マ回数・3連対率を重視  
+    const sashiScore = n(p.sashi) * 3 + n(p.ma) * 2 + n(p.threeRate) * 0.3;
+    // 先行なら先行スコア優先、番手なら差しスコア優先
+    const baseScore = isSenko ? senkoScore + sashiScore * 0.3 : sashiScore + senkoScore * 0.2;
+    const youngBonus = isYoung && isSenko ? 1.3 : 1.0;
+    return { ...p, score: baseScore * (roleBonus[p.role] || 0.3) * youngBonus };
+  }).sort((a, b) => b.score - a.score);
 
   // ── ライン情報 ──
   const lineMap = {};
