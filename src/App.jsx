@@ -34,22 +34,28 @@ function analyzeRace(players, prizeLevel, anaModeOn) {
   );
 
   // ── 差し型最強（閾値を相対化）──
-  const sashiMin = maxMatches >= 15 ? 5 : 2; // 試合数少ない場合は差し2回以上で対象
+  // 番手・3番手は差し型でも頭候補優先度を下げる（差し切りはあり得るが頭は稀）
+  const sashiMin = maxMatches >= 15 ? 5 : 2;
   const sashiTop = valid
-    .filter(p => n(p.sashi) >= sashiMin && n(p.matches) >= matchThreshold)
+    .filter(p => n(p.sashi) >= sashiMin && n(p.matches) >= matchThreshold && p.role !== "番手" && p.role !== "3番手")
     .sort((a, b) => n(b.sashi) - n(a.sashi));
   const maTop = valid
-    .filter(p => n(p.ma) >= sashiMin && n(p.matches) >= matchThreshold)
+    .filter(p => n(p.ma) >= sashiMin && n(p.matches) >= matchThreshold && p.role !== "番手" && p.role !== "3番手")
     .sort((a, b) => n(b.ma) - n(a.ma));
+  // 番手の差し型は別途低優先度で管理
+  const sashiBante = valid
+    .filter(p => n(p.sashi) >= sashiMin && n(p.matches) >= matchThreshold && (p.role === "番手" || p.role === "3番手"))
+    .sort((a, b) => n(b.sashi) - n(a.sashi));
 
   // ── 若手120期以降 ──
   const youngsters = valid.filter(p => n(p.period) >= 120);
 
   // ── 試合数・閾値に関わらず全員をスコアリングして頭候補選定 ──
-  // 勝率・3連対率・B回数・逃回数で総合スコア計算
+  // 役割による補正: 先行・両>番手>3番手（番手は頭になりにくい）
+  const roleBonus = { "先行": 1.0, "両": 0.9, "番手": 0.5, "3番手": 0.3, "4番手": 0.2 };
   const scored = valid.map(p => ({
     ...p,
-    score: n(p.winRate) * 2 + n(p.threeRate) * 0.5 + n(p.B) * 3 + n(p.nige) * 2 + n(p.maki) * 1.5 + n(p.sashi) * 2 + n(p.ma) * 1
+    score: (n(p.winRate) * 2 + n(p.threeRate) * 0.5 + n(p.B) * 3 + n(p.nige) * 2 + n(p.maki) * 1.5 + n(p.sashi) * 1 + n(p.ma) * 0.5) * (roleBonus[p.role] || 0.5)
   })).sort((a, b) => b.score - a.score);
 
   // ── ライン情報 ──
@@ -135,6 +141,11 @@ function analyzeRace(players, prizeLevel, anaModeOn) {
         addHead(p, `💡 強力ライン${p.line}の${p.role}（差し切り候補）`, 4);
       }
     }
+  });
+
+  // ── 番手の差し型を低優先度で頭候補追加 ──
+  sashiBante.slice(0, 2).forEach(p => {
+    addHead(p, `⚠️ 番手差し切り注意（差${p.sashi}回・${p.role}）`, 4);
   });
 
   // ── フォールバック: 頭候補が0人の場合はスコア上位3名を採用 ──
