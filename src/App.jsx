@@ -18,55 +18,10 @@ function analyzeRace(players, prizeLevel, anaModeOn) {
   const results = { heads: [], third: [], buyTargets: [], anaBuy: [], skip: false, skipReason: "", patterns: [], warnings: [] };
 
   const withNum = players.map((p, i) => ({ ...p, num: i + 1 }));
-  const valid = withNum.filter(p => p.name && parseFloat(p.winRate) >= 0);
+  const valid = withNum.filter(p => p.name && p.name.trim() !== "");
   if (valid.length < 3) return results;
 
   const n = (v) => parseFloat(v) || 0;
-
-  // ── 試合数の信頼閾値（A3は少ない） ──
-  const maxMatches = Math.max(...valid.map(p => n(p.matches)), 1);
-  const matchThreshold = maxMatches >= 15 ? 15 : Math.max(3, Math.floor(maxMatches * 0.5));
-
-  // ── STEP1: 絶対王者判定 ──
-  const absoluteKing = valid.find(p =>
-    n(p.winRate) >= 60 && n(p.threeRate) >= 90 &&
-    (n(p.B) >= 5 || n(p.nige) >= 5) && n(p.matches) >= 20
-  );
-
-  // ── 差し型最強（閾値を相対化）──
-  // 番手・3番手は差し型でも頭候補優先度を下げる（差し切りはあり得るが頭は稀）
-  const sashiMin = maxMatches >= 15 ? 5 : 2;
-  const sashiTop = valid
-    .filter(p => n(p.sashi) >= sashiMin && n(p.matches) >= matchThreshold && p.role !== "番手" && p.role !== "3番手")
-    .sort((a, b) => n(b.sashi) - n(a.sashi));
-  const maTop = valid
-    .filter(p => n(p.ma) >= sashiMin && n(p.matches) >= matchThreshold && p.role !== "番手" && p.role !== "3番手")
-    .sort((a, b) => n(b.ma) - n(a.ma));
-  // 番手の差し型は別途低優先度で管理
-  const sashiBante = valid
-    .filter(p => n(p.sashi) >= sashiMin && n(p.matches) >= matchThreshold && (p.role === "番手" || p.role === "3番手"))
-    .sort((a, b) => n(b.sashi) - n(a.sashi));
-
-  // ── 若手120期以降 ──
-  const youngsters = valid.filter(p => n(p.period) >= 120);
-
-  // ── スコアリング：役割・戦法を正確に反映 ──
-  // 先行型: B回数・逃回数を最重視
-  // 差し型: 差し回数・マ回数を重視（ただし番手に限定）
-  // 若手120期以降の先行は最優先
-  const roleBonus = { "先行": 1.0, "両": 0.85, "番手": 0.4, "3番手": 0.2, "4番手": 0.1 };
-  const scored = valid.map(p => {
-    const isSenko = p.role === "先行" || p.role === "両";
-    const isYoung = n(p.period) >= 120;
-    // 先行型スコア: B回数・逃回数・勝率を重視
-    const senkoScore = n(p.B) * 4 + n(p.nige) * 3 + n(p.maki) * 2 + n(p.winRate) * 1.5;
-    // 差し型スコア: 差し回数・マ回数・3連対率を重視  
-    const sashiScore = n(p.sashi) * 3 + n(p.ma) * 2 + n(p.threeRate) * 0.3;
-    // 先行なら先行スコア優先、番手なら差しスコア優先
-    const baseScore = isSenko ? senkoScore + sashiScore * 0.3 : sashiScore + senkoScore * 0.2;
-    const youngBonus = isYoung && isSenko ? 1.3 : 1.0;
-    return { ...p, score: baseScore * (roleBonus[p.role] || 0.3) * youngBonus };
-  }).sort((a, b) => b.score - a.score);
 
   // ── ライン情報 ──
   const lineMap = {};
@@ -78,22 +33,42 @@ function analyzeRace(players, prizeLevel, anaModeOn) {
   const fivePersonLine = lines.find(l => l.length >= 5);
   const fourPersonLines = lines.filter(l => l.length === 4);
 
-  // ── STEP6: 見送り判定 ──
-  const hasYoungOrSashi = youngsters.length > 0 || sashiTop.length > 0;
-  const hasFiveLine = !!fivePersonLine;
-  const allLinesSmall = lines.every(l => l.length <= 4);
-  if (absoluteKing && allLinesSmall && !hasYoungOrSashi) {
-    // 見送り候補だが条件厳格
-    if (n(absoluteKing.winRate) >= 60 && n(absoluteKing.threeRate) >= 90) {
-      results.skip = true;
-      results.skipReason = `完全絶対王者【${absoluteKing.name}】確認。対抗に若手120期以降・差し型最強不在のため見送り推奨。`;
-    }
-  }
-  if (hasFiveLine) {
-    results.skip = false;
-    results.warnings.push("⚠️ 5人ライン検出！崩壊リスク高く中穴チャンス→必ず買う");
-  }
+  // ── STEP1: 完全絶対王者判定 ──
+  // 条件: 勝率60%+ AND 3連対率90%+ AND (B回数orは逃回数がトップ) AND 試合数20+
+  const maxB = Math.max(...valid.map(p => n(p.B)), 0);
+  const maxNige = Math.max(...valid.map(p => n(p.nige)), 0);
+  const absoluteKing = valid.find(p =>
+    n(p.winRate) >= 60 &&
+    n(p.threeRate) >= 90 &&
+    (n(p.B) >= maxB && maxB > 0 || n(p.nige) >= maxNige && maxNige > 0) &&
+    n(p.matches) >= 20
+  );
 
+  // ── STEP4-B: 差し型最強パターン ──
+  // 差5以上+試合数20以上 OR マ5以上+試合数20以上
+  const sashiTop = valid
+    .filter(p => n(p.sashi) >= 5 && n(p.matches) >= 20)
+    .sort((a, b) => n(b.sashi) - n(a.sashi));
+  const maTop = valid
+    .filter(p => n(p.ma) >= 5 && n(p.matches) >= 20)
+    .sort((a, b) => n(b.ma) - n(a.ma));
+
+  // 試合数が全員少ない場合（A3等）は相対的に判断
+  const maxMatches = Math.max(...valid.map(p => n(p.matches)), 1);
+  const sashiTopLow = maxMatches < 15 ? valid
+    .filter(p => n(p.sashi) >= 2 && n(p.matches) >= 3)
+    .sort((a, b) => n(b.sashi) - n(a.sashi)) : [];
+  const maTopLow = maxMatches < 15 ? valid
+    .filter(p => n(p.ma) >= 2 && n(p.matches) >= 3)
+    .sort((a, b) => n(b.ma) - n(a.ma)) : [];
+
+  const effectiveSashiTop = sashiTop.length > 0 ? sashiTop : sashiTopLow;
+  const effectiveMaTop = maTop.length > 0 ? maTop : maTopLow;
+
+  // ── STEP4-D: 若手120期以降 ──
+  const youngsters = valid.filter(p => n(p.period) >= 120);
+
+  // ── 頭候補追加関数 ──
   const headSet = new Set();
   const thirdSet = new Set();
 
@@ -110,96 +85,134 @@ function analyzeRace(players, prizeLevel, anaModeOn) {
     }
   };
 
-  // ── 頭候補 ──
+  // ── STEP4-A: 完全絶対王者 ──
   if (absoluteKing) {
-    addHead(absoluteKing, "✅ 完全絶対王者（勝率60%+3連90%+B/逃トップ+試合数20+）", 1);
+    addHead(absoluteKing, `✅ 完全絶対王者（勝率${absoluteKing.winRate}%・3連${absoluteKing.threeRate}%・試合数${absoluteKing.matches}）`, 1);
   }
 
-  sashiTop.forEach((p, i) => {
-    const isKingLine = absoluteKing && p.line === absoluteKing.line;
-    addHead(p, `🔥 差し型最強（差${p.sashi}回・試合数${p.matches}）${isKingLine ? "※絶対王者同ライン" : ""}`, i === 0 ? 1 : 2);
-  });
-  maTop.forEach(p => {
-    addHead(p, `🔥 マ型最強（マ${p.ma}回・試合数${p.matches}）`, 2);
+  // ── STEP4-B: 差し型最強（頭候補最上位）──
+  effectiveSashiTop.forEach((p, i) => {
+    // ルール失効チェック: 完全絶対王者がいる場合
+    if (absoluteKing) return;
+    // 同ライン先頭が「B10+捲5+試合数20+」3条件全該当なら降格（例外あり）
+    const lineMembers = lineMap[p.line] || [];
+    const lineLeader = lineMembers.find(lp => lp.role === "先行" || lp.role === "両");
+    const leaderStrong = lineLeader && n(lineLeader.B) >= 10 && n(lineLeader.maki) >= 5 && n(lineLeader.matches) >= 20;
+    // 降格例外: S1級 or 同ライン勝率トップ or 差5+S5以上二刀流
+    const lineWinRateTop = lineMembers.every(lp => lp.num === p.num || n(p.winRate) >= n(lp.winRate));
+    const exception = p.grade === "S1" || lineWinRateTop || (n(p.sashi) >= 5 && n(p.B) >= 5);
+    if (leaderStrong && !exception) {
+      addHead(p, `⚠️ 差し型（差${p.sashi}回）降格例外なし→番手候補`, 5);
+    } else {
+      addHead(p, `🔥 差し型最強（差${p.sashi}回・試合数${p.matches}）`, i === 0 ? 1 : 2);
+    }
   });
 
+  effectiveMaTop.forEach((p, i) => {
+    if (absoluteKing) return;
+    if (!headSet.has(p.num)) {
+      addHead(p, `🔥 マ型最強（マ${p.ma}回・試合数${p.matches}）`, i === 0 ? 1 : 2);
+    }
+  });
+
+  // ── STEP4-D: 若手120期以降 ──
   youngsters.forEach(p => {
-    if (n(p.B) >= 10 && n(p.matches) >= 20 && p.role === "先行") {
+    // B10+先行先頭+試合数20+は最上位
+    if (n(p.B) >= 10 && (p.role === "先行" || p.role === "両") && n(p.matches) >= 20) {
       addHead(p, `⭐ 若手${p.period}期・B${p.B}先行先頭（頭候補最上位）`, 1);
     } else {
-      addHead(p, `⭐ 若手${p.period}期（120期以降自動採用）`, 3);
+      addHead(p, `⭐ 若手${p.period}期（120期以降・自動採用）`, 3);
     }
+    addThird(p, `若手${p.period}期（試合数不問・自動採用）`);
   });
 
-  // 4人ライン番手
+  // ── STEP4-E: 4人ライン番手差し切り頭（パターン④）──
   fourPersonLines.forEach(line => {
-    const bantePlayer = line.find(p => p.role === "番手");
-    if (bantePlayer) {
-      const leader = line.find(p => p.role === "先行");
-      if (leader && n(leader.nige) === 0) {
-        addHead(bantePlayer, `⚠️ 4人ライン番手差し切り頭警戒（先頭捲り0回）`, 3);
+    const leader = line.find(p => p.role === "先行" || p.role === "両");
+    const bante = line.find(p => p.role === "番手");
+    const sanban = line.find(p => p.role === "3番手");
+    const yonban = line.find(p => p.role === "4番手");
+    if (leader && bante && n(leader.maki) === 0) {
+      addHead(bante, `⚠️ 4人ライン番手差し切り（先頭捲り0回）`, 3);
+    }
+    // ── ルール⑭: 若手121期以降の先行先頭頭時→3番手・4番手も2着候補 ──
+    if (leader && n(leader.period) >= 121) {
+      // 3番手がS回数トップなら2着候補
+      const maxS = Math.max(...valid.map(p => n(p.B)), 0);
+      if (sanban && n(sanban.B) >= maxS * 0.7) {
+        addThird(sanban, `ルール⑭：3番手S上位（B${sanban.B}）→2着候補`);
       }
+      // 4番手が差し型最多なら2着・3着候補
+      const maxSashi = Math.max(...valid.map(p => n(p.sashi)), 0);
+      if (yonban && n(yonban.sashi) >= maxSashi * 0.7 && n(yonban.sashi) >= 2) {
+        addThird(yonban, `ルール⑭：4番手差し型最多（差${yonban.sashi}）→2-3着候補`);
+      }
+      if (sanban) addThird(sanban, `ルール⑭：4人ライン3番手（若手先頭頭時）`);
+      if (yonban) addThird(yonban, `ルール⑭：4人ライン4番手（若手先頭頭時）`);
+      results.warnings.push(`💡 ルール⑭：${leader.name}（${leader.period}期）先頭頭→番手以外の2着分散に注意`);
     }
   });
 
-  // 残り選手も中位採用
+  // ── 番手・3番手も頭候補に1〜2点（13Rの学び）──
   valid.forEach(p => {
     if (!headSet.has(p.num) && (p.role === "番手" || p.role === "3番手")) {
       const lineMembers = lineMap[p.line] || [];
-      const leader = lineMembers.find(lp => lp.role === "先行");
-      if (leader && (sashiTop.find(s => s.num === leader.num) || (absoluteKing && leader.num === absoluteKing.num))) {
-        addHead(p, `💡 強力ライン${p.line}の${p.role}（差し切り候補）`, 4);
+      const leader = lineMembers.find(lp => lp.role === "先行" || lp.role === "両");
+      if (leader) {
+        addHead(p, `💡 ライン${p.line}${p.role}（差し切り候補・控えめ）`, 5);
       }
     }
   });
 
-  // ── 番手の差し型を低優先度で頭候補追加 ──
-  sashiBante.slice(0, 2).forEach(p => {
-    addHead(p, `⚠️ 番手差し切り注意（差${p.sashi}回・${p.role}）`, 4);
-  });
-
-  // ── フォールバック: 頭候補が0人の場合はスコア上位3名を採用 ──
-  if (results.heads.length === 0 && scored.length > 0) {
-    scored.slice(0, 3).forEach((p, i) => {
-      const reason = `📊 総合スコア上位（勝率${p.winRate}% 3連${p.threeRate}% B${p.B} 逃${p.nige} 差${p.sashi}）`;
-      addHead(p, reason, i + 2);
+  // ── フォールバック: 先行型でB/逃上位の選手 ──
+  if (results.heads.length === 0) {
+    const senkoPlayers = valid
+      .filter(p => p.role === "先行" || p.role === "両")
+      .sort((a, b) => (n(b.B) * 4 + n(b.nige) * 3 + n(b.winRate) * 2) - (n(a.B) * 4 + n(a.nige) * 3 + n(a.winRate) * 2));
+    senkoPlayers.slice(0, 3).forEach((p, i) => {
+      addHead(p, `📊 先行型上位（B${p.B}・逃${p.nige}・勝率${p.winRate}%）`, i + 2);
     });
   }
-  
-  // 頭候補が1〜2人しかいない場合もスコア上位から補完
-  if (results.heads.length < 3 && scored.length > 0) {
-    scored.slice(0, 4).forEach(p => {
-      if (!headSet.has(p.num)) {
-        addHead(p, `📊 スコア補完（勝率${p.winRate}% 差${p.sashi} マ${p.ma}）`, 4);
-      }
-    });
+  if (results.heads.length < 2) {
+    valid
+      .sort((a, b) => n(b.winRate) - n(a.winRate))
+      .slice(0, 3)
+      .forEach(p => { if (!headSet.has(p.num)) addHead(p, `📊 勝率上位（${p.winRate}%）`, 4); });
   }
 
-  // ── 3着候補 ──
-  youngsters.forEach(p => addThird(p, `若手${p.period}期（試合数不問・自動採用）`));
-
+  // ── STEP5: 3着候補 ──
+  // 若手120期以降（自動）
+  youngsters.forEach(p => addThird(p, `若手${p.period}期自動採用`));
+  // ライン番手・最後尾（自動）
   lines.forEach(line => {
-    line.forEach(p => {
-      if (p.role === "番手" || p.role === "3番手" || p.role === "4番手") {
-        addThird(p, `ライン${p.line}の${p.role}（ライン関連自動採用）`);
-      }
+    line.forEach((p, idx) => {
+      if (idx > 0) addThird(p, `ライン${p.line}${p.role}（自動採用）`);
     });
   });
+  // 差し型上位（差5+試合数20+）
+  effectiveSashiTop.forEach(p => addThird(p, `差し型上位（差${p.sashi}回）`));
+  effectiveMaTop.forEach(p => addThird(p, `マ型上位（マ${p.ma}回）`));
+  // 頭候補も3着候補に
+  results.heads.forEach(h => addThird(h.player, "頭候補も3着対象"));
+  // 残り全員（総流し精神）
+  valid.forEach(p => addThird(p, "総流し"));
 
-  sashiTop.forEach(p => addThird(p, `差し型上位（差${p.sashi}回）`));
-  maTop.forEach(p => addThird(p, `マ型上位（マ${p.ma}回）`));
-
-  valid.forEach(p => {
-    if (!thirdSet.has(p.num)) addThird(p, "全候補採用（中穴総流し精神）");
-  });
-
-  results.heads.sort((a, b) => a.priority - b.priority);
+  // ── STEP6: 見送り判定 ──
+  // 5人ライン→必ず買う
+  if (fivePersonLine) {
+    results.warnings.push("⚠️ 5人ライン検出！崩壊リスク高く中穴チャンス→必ず買う");
+    results.skip = false;
+  } else if (absoluteKing && !fivePersonLine && youngsters.length === 0 && effectiveSashiTop.length === 0) {
+    results.skip = true;
+    results.skipReason = `完全絶対王者【${absoluteKing.name}】確認。若手120期以降・差し型最強不在のため見送り推奨。`;
+  }
 
   // ── パターン判定 ──
-  if (sashiTop.length > 0 && lines.filter(l => l.some(p => n(p.maki) >= 3)).length >= 2) {
+  const makiLines = lines.filter(l => l.some(p => n(p.maki) >= 3 || n(p.maki) >= 2));
+  if (effectiveSashiTop.length > 0 && makiLines.length >= 2) {
     results.patterns.push("📌 パターン①：差し型最強頭＋対抗まくり連鎖（17,000円〜実証済み）");
   }
-  if (lines.some(l => l.length === 3 && l.filter(p => n(p.sashi) >= 5).length >= 2)) {
+  if (lines.some(l => l.length === 3 && l.filter(p => n(p.sashi) >= 2).length >= 2)) {
     results.patterns.push("📌 パターン②：3人ライン番手差し切り完結（8,700円実証済み）");
   }
   if (fivePersonLine) {
@@ -209,20 +222,21 @@ function analyzeRace(players, prizeLevel, anaModeOn) {
     results.patterns.push("📌 パターン④：4人ライン番手差し切り頭（7,400円実証済み）");
   }
 
-  // ── 買い目生成（最大25点）──
-  const headNums = results.heads.slice(0, 4).map(h => h.player.num);
-  const thirdNums = results.third.slice(0, 6).map(t => t.player.num);
+  results.heads.sort((a, b) => a.priority - b.priority);
+
+  // ── 買い目生成 ──
   const allNums = valid.map(p => p.num);
+  const thirdNums = results.third.slice(0, 8).map(t => t.player.num);
 
   let count = 0;
   const buys = [];
-  for (const h of headNums) {
+  for (const h of results.heads.slice(0, 5)) {
     for (const s of allNums) {
-      if (s === h) continue;
+      if (s === h.player.num) continue;
       for (const t of thirdNums) {
-        if (t === h || t === s) continue;
+        if (t === h.player.num || t === s) continue;
         if (count >= 25) break;
-        buys.push([h, s, t]);
+        buys.push([h.player.num, s, t]);
         count++;
       }
       if (count >= 25) break;
@@ -231,28 +245,9 @@ function analyzeRace(players, prizeLevel, anaModeOn) {
   }
   results.buyTargets = buys;
 
-  // 穴狙い買い目（頭を差し型・若手に絞る）
-  const anaHeads = results.heads.filter(h => h.priority <= 2).slice(0, 2).map(h => h.player.num);
-  const anaThirds = results.third.slice(0, 5).map(t => t.player.num);
-  let anaCount = 0;
-  const anaBuys = [];
-  for (const h of anaHeads) {
-    for (const s of allNums) {
-      if (s === h) continue;
-      for (const t of anaThirds) {
-        if (t === h || t === s) continue;
-        if (anaCount >= 10) break;
-        anaBuys.push([h, s, t]);
-        anaCount++;
-      }
-      if (anaCount >= 10) break;
-    }
-    if (anaCount >= 10) break;
-  }
-  results.anaBuy = anaBuys;
-
   return results;
 }
+
 
 // ==================== COMPONENTS ====================
 
