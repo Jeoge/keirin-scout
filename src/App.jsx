@@ -23,22 +23,34 @@ function analyzeRace(players, prizeLevel, anaModeOn) {
 
   const n = (v) => parseFloat(v) || 0;
 
+  // ── 試合数の信頼閾値（A3は少ない） ──
+  const maxMatches = Math.max(...valid.map(p => n(p.matches)), 1);
+  const matchThreshold = maxMatches >= 15 ? 15 : Math.max(3, Math.floor(maxMatches * 0.5));
+
   // ── STEP1: 絶対王者判定 ──
   const absoluteKing = valid.find(p =>
     n(p.winRate) >= 60 && n(p.threeRate) >= 90 &&
     (n(p.B) >= 5 || n(p.nige) >= 5) && n(p.matches) >= 20
   );
 
-  // ── 差し型最強 ──
+  // ── 差し型最強（閾値を相対化）──
+  const sashiMin = maxMatches >= 15 ? 5 : 2; // 試合数少ない場合は差し2回以上で対象
   const sashiTop = valid
-    .filter(p => n(p.sashi) >= 5 && n(p.matches) >= 20)
+    .filter(p => n(p.sashi) >= sashiMin && n(p.matches) >= matchThreshold)
     .sort((a, b) => n(b.sashi) - n(a.sashi));
   const maTop = valid
-    .filter(p => n(p.ma) >= 5 && n(p.matches) >= 20)
+    .filter(p => n(p.ma) >= sashiMin && n(p.matches) >= matchThreshold)
     .sort((a, b) => n(b.ma) - n(a.ma));
 
   // ── 若手120期以降 ──
   const youngsters = valid.filter(p => n(p.period) >= 120);
+
+  // ── 試合数・閾値に関わらず全員をスコアリングして頭候補選定 ──
+  // 勝率・3連対率・B回数・逃回数で総合スコア計算
+  const scored = valid.map(p => ({
+    ...p,
+    score: n(p.winRate) * 2 + n(p.threeRate) * 0.5 + n(p.B) * 3 + n(p.nige) * 2 + n(p.maki) * 1.5 + n(p.sashi) * 2 + n(p.ma) * 1
+  })).sort((a, b) => b.score - a.score);
 
   // ── ライン情報 ──
   const lineMap = {};
@@ -124,6 +136,23 @@ function analyzeRace(players, prizeLevel, anaModeOn) {
       }
     }
   });
+
+  // ── フォールバック: 頭候補が0人の場合はスコア上位3名を採用 ──
+  if (results.heads.length === 0 && scored.length > 0) {
+    scored.slice(0, 3).forEach((p, i) => {
+      const reason = `📊 総合スコア上位（勝率${p.winRate}% 3連${p.threeRate}% B${p.B} 逃${p.nige} 差${p.sashi}）`;
+      addHead(p, reason, i + 2);
+    });
+  }
+  
+  // 頭候補が1〜2人しかいない場合もスコア上位から補完
+  if (results.heads.length < 3 && scored.length > 0) {
+    scored.slice(0, 4).forEach(p => {
+      if (!headSet.has(p.num)) {
+        addHead(p, `📊 スコア補完（勝率${p.winRate}% 差${p.sashi} マ${p.ma}）`, 4);
+      }
+    });
+  }
 
   // ── 3着候補 ──
   youngsters.forEach(p => addThird(p, `若手${p.period}期（試合数不問・自動採用）`));
@@ -330,13 +359,14 @@ function PlayerRow({ player, idx, onChange, onRemove, lineColor }) {
 }
 
 function ResultPanel({ result, players }) {
+  const [selectedZone, setSelectedZone] = useState("ana");
   if (!result) return null;
 
   const LINE_COLORS = ["bg-red-500", "bg-blue-500", "bg-yellow-500", "bg-green-500", "bg-purple-500", "bg-pink-500"];
   const getColor = (num) => {
     const p = players[num - 1];
     if (!p) return "bg-gray-500";
-    const li = LINE_LABELS.indexOf(p.line);
+    const li = ["A","B","C","D","E","F"].indexOf(p.line);
     return LINE_COLORS[li] || "bg-gray-500";
   };
 
@@ -349,107 +379,204 @@ function ResultPanel({ result, players }) {
     );
   }
 
-  return (
-    <div className="space-y-4 mt-4">
-      {/* Warnings */}
-      {result.warnings.map((w, i) => (
-        <div key={i} className="bg-yellow-900/30 border border-yellow-500/50 rounded-xl p-3 text-yellow-300 text-sm font-bold">
-          {w}
-        </div>
-      ))}
+  // ── 買い目を3ゾーンに分類 ──
+  const heads = result.heads;
+  const honmeiHead = heads.filter(h => h.priority <= 2).slice(0, 1);
+  const anaHeads   = heads.filter(h => h.priority <= 3).slice(0, 3);
+  const穴Heads     = heads.slice(0, 5);
+  const thirds     = result.third.slice(0, 7).map(t => t.player.num);
+  const allNums    = players.map((_, i) => i + 1).filter(n => players[n-1]?.name);
 
-      {/* Patterns */}
+  // ── 25点を3ゾーンで分配 ──
+  // ── 25点配分：本命3・中穴12・穴10（的中率13%実績→本命絞る）──
+  // 本命線: 最大3点（頭1点・最有力のみ）
+  const honmeiBuys = [];
+  if (honmeiHead.length > 0) {
+    const h = honmeiHead[0].player.num;
+    for (const s of allNums) {
+      if (s === h) continue;
+      for (const t of thirds.slice(0, 4)) {
+        if (t === h || t === s) continue;
+        honmeiBuys.push([h, s, t]);
+        if (honmeiBuys.length >= 3) break;
+      }
+      if (honmeiBuys.length >= 3) break;
+    }
+  }
+
+  // 中穴: 最大12点（頭2〜3点・中心）
+  const anaBuys = [];
+  const anaH = anaHeads.slice(0, 3).map(h => h.player.num);
+  const honmeiSet = new Set(honmeiBuys.map(b => b.join('-')));
+  for (const h of anaH) {
+    for (const s of allNums) {
+      if (s === h) continue;
+      for (const t of thirds) {
+        if (t === h || t === s) continue;
+        const key = [h,s,t].join('-');
+        if (!honmeiSet.has(key) && !anaBuys.some(b => b[0]===h&&b[1]===s&&b[2]===t)) {
+          anaBuys.push([h, s, t]);
+        }
+        if (anaBuys.length >= 14) break;
+      }
+      if (anaBuys.length >= 14) break;
+    }
+    if (anaBuys.length >= 12) break;
+  }
+
+  // 穴: 最大10点（頭広め・上2ゾーンと重複なし）
+  const anaSet = new Set(anaBuys.map(b => b.join('-')));
+  const 穴Buys = result.buyTargets.filter(b => {
+    const key = b.join('-');
+    return !honmeiSet.has(key) && !anaSet.has(key);
+  }).slice(0, 8);
+
+  // 合計25点以内（3+14+8=25）
+  const total = honmeiBuys.length + anaBuys.length + 穴Buys.length;
+
+  const zones = {
+    honmei: { label: "本命線", emoji: "🎯", color: "blue",   desc: `的中率低め・保険程度（${honmeiBuys.length}点）`, buys: honmeiBuys, invest: honmeiBuys.length * 100, range: "〜3,000円" },
+    ana:    { label: "中穴",   emoji: "💫", color: "yellow", desc: `メイン狙い・3,000〜15,000円（${anaBuys.length}点）`, buys: anaBuys, invest: anaBuys.length * 100, range: "3,000〜15,000円" },
+    ana2:   { label: "穴",     emoji: "🕳️", color: "red",    desc: `一発狙い・10,000〜25,000円（${穴Buys.length}点）`, buys: 穴Buys, invest: 穴Buys.length * 100, range: "10,000〜25,000円" },
+  };
+
+  const zone = zones[selectedZone];
+
+  const NumBadge = ({ num, size = "sm" }) => (
+    <span className={`inline-flex items-center justify-center rounded-full font-black text-white flex-shrink-0
+      ${size === "lg" ? "w-9 h-9 text-base" : "w-6 h-6 text-xs"}
+      ${getColor(num)}`}>
+      {num}
+    </span>
+  );
+
+  return (
+    <div className="space-y-4 mt-2">
+
+      {/* Warnings & Patterns */}
+      {result.warnings.map((w, i) => (
+        <div key={i} className="bg-yellow-900/30 border border-yellow-500/50 rounded-xl p-3 text-yellow-300 text-xs font-bold">{w}</div>
+      ))}
       {result.patterns.length > 0 && (
-        <div className="bg-purple-900/30 border border-purple-500/50 rounded-xl p-3">
-          <div className="text-purple-300 font-bold text-sm mb-2">🎯 該当パターン</div>
-          {result.patterns.map((p, i) => (
-            <div key={i} className="text-purple-200 text-xs mb-1">{p}</div>
-          ))}
+        <div className="bg-purple-900/30 border border-purple-500/40 rounded-xl p-3">
+          <div className="text-purple-300 font-bold text-xs mb-1">🎯 該当パターン</div>
+          {result.patterns.map((p, i) => <div key={i} className="text-purple-200 text-xs">{p}</div>)}
         </div>
       )}
 
-      {/* Head Candidates */}
+      {/* 頭候補サマリー */}
       <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4">
-        <div className="text-yellow-400 font-black text-base mb-3">🏆 頭候補（優先順）</div>
+        <div className="text-yellow-400 font-black text-sm mb-3">🏆 頭候補</div>
         <div className="space-y-2">
-          {result.heads.map((h, i) => (
-            <div key={i} className="flex items-start gap-3 bg-gray-700/40 rounded-lg p-3">
-              <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-black text-white flex-shrink-0 ${getColor(h.player.num)}`}>
-                {h.player.num}
-              </span>
+          {heads.slice(0, 4).map((h, i) => (
+            <div key={i} className="flex items-center gap-3">
+              <NumBadge num={h.player.num} size="lg" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-white font-bold text-sm">{h.player.name}</span>
-                  <PriorityBadge priority={h.priority} />
+                  {h.priority === 1 && <span className="text-xs bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-0.5 rounded font-bold">最有力</span>}
+                  {h.priority === 2 && <span className="text-xs bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 px-2 py-0.5 rounded font-bold">有力</span>}
+                  {h.priority >= 3 && <span className="text-xs bg-gray-500/20 text-gray-400 border border-gray-500/40 px-2 py-0.5 rounded">候補</span>}
                 </div>
-                <div className="text-gray-400 text-xs mt-0.5 leading-relaxed">{h.reason}</div>
+                <div className="text-gray-500 text-xs mt-0.5 truncate">{h.reason}</div>
               </div>
-              <div className="text-gray-500 text-xs flex-shrink-0">#{i + 1}</div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Third Candidates */}
-      <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4">
-        <div className="text-emerald-400 font-black text-base mb-3">🎯 3着候補（総流し対象）</div>
-        <div className="flex flex-wrap gap-2">
-          {result.third.slice(0, 9).map((t, i) => (
-            <div key={i} className="flex items-center gap-1.5 bg-gray-700/40 rounded-lg px-3 py-1.5">
-              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-black text-white ${getColor(t.player.num)}`}>
-                {t.player.num}
-              </span>
-              <span className="text-white text-sm font-medium">{t.player.name}</span>
-            </div>
+      {/* 合計点数バナー */}
+      <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl px-4 py-3 flex items-center justify-between">
+        <div className="text-gray-300 text-sm font-bold">合計買い目</div>
+        <div className="flex items-center gap-3">
+          <span className="text-white font-black text-xl">{total}点</span>
+          <span className="text-gray-400 text-sm">{(total * 100).toLocaleString()}円</span>
+          <span className={`text-xs font-bold px-2 py-0.5 rounded ${total <= 25 ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300"}`}>
+            {total <= 25 ? "✅ 25点以内" : "⚠️ 超過"}
+          </span>
+        </div>
+      </div>
+
+      {/* ゾーン選択 */}
+      <div>
+        <div className="text-gray-400 text-xs mb-2 font-bold">狙う配当帯を選んでください</div>
+        <div className="grid grid-cols-3 gap-2">
+          {Object.entries(zones).map(([key, z]) => (
+            <button
+              key={key}
+              onClick={() => setSelectedZone(key)}
+              className={`rounded-xl p-3 border transition-all text-center ${
+                selectedZone === key
+                  ? z.color === "blue"   ? "bg-blue-500/20 border-blue-500/60 text-blue-300"
+                  : z.color === "yellow" ? "bg-yellow-500/20 border-yellow-500/60 text-yellow-300"
+                  : "bg-red-500/20 border-red-500/60 text-red-300"
+                  : "bg-gray-800/40 border-gray-700/40 text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              <div className="text-xl mb-1">{z.emoji}</div>
+              <div className="font-black text-sm">{z.label}</div>
+              <div className="text-xs mt-0.5 opacity-70">{z.range}</div>
+            </button>
           ))}
         </div>
       </div>
 
-      {/* Buy Targets */}
-      <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="text-blue-400 font-black text-base">🎰 推奨買い目（3連単）</div>
-          <Badge color="blue">{result.buyTargets.length}点</Badge>
-        </div>
-        <div className="grid grid-cols-3 gap-1.5">
-          {result.buyTargets.slice(0, 25).map((b, i) => (
-            <div key={i} className="bg-gray-700/40 rounded-lg px-2 py-1.5 text-center">
-              <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[0])}`}>{b[0]}</span>
-              <span className="text-gray-400 text-xs mx-0.5">-</span>
-              <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[1])}`}>{b[1]}</span>
-              <span className="text-gray-400 text-xs mx-0.5">-</span>
-              <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[2])}`}>{b[2]}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Ana Buy */}
-      {result.anaBuy.length > 0 && (
-        <div className="bg-gray-800/60 border border-orange-700/40 rounded-xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-orange-400 font-black text-base">🕳️ 穴狙い買い目</div>
-            <Badge color="yellow">{result.anaBuy.length}点</Badge>
+      {/* 選択ゾーンの買い目 */}
+      <div className={`border rounded-xl p-4 ${
+        zone.color === "blue"   ? "bg-blue-900/20 border-blue-700/40"
+        : zone.color === "yellow" ? "bg-yellow-900/20 border-yellow-700/40"
+        : "bg-red-900/20 border-red-700/40"
+      }`}>
+        <div className="flex items-center justify-between mb-1">
+          <div className={`font-black text-base ${
+            zone.color === "blue" ? "text-blue-300" : zone.color === "yellow" ? "text-yellow-300" : "text-red-300"
+          }`}>
+            {zone.emoji} {zone.label}買い目
           </div>
-          <div className="text-gray-400 text-xs mb-2">差し型最強・若手頭に絞った中穴特化</div>
+          <div className="text-right">
+            <div className="text-white font-black text-lg">{zone.buys.length}点</div>
+            <div className="text-gray-400 text-xs">投資 {zone.invest.toLocaleString()}円</div>
+          </div>
+        </div>
+        <div className="text-gray-400 text-xs mb-3">{zone.desc}</div>
+
+        {zone.buys.length === 0 ? (
+          <div className="text-gray-500 text-sm text-center py-4">
+            データが不足しています。<br/>ライン・役割を確認してください。
+          </div>
+        ) : (
           <div className="grid grid-cols-3 gap-1.5">
-            {result.anaBuy.map((b, i) => (
-              <div key={i} className="bg-orange-900/20 border border-orange-700/30 rounded-lg px-2 py-1.5 text-center">
-                <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[0])}`}>{b[0]}</span>
-                <span className="text-gray-400 text-xs mx-0.5">-</span>
-                <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[1])}`}>{b[1]}</span>
-                <span className="text-gray-400 text-xs mx-0.5">-</span>
-                <span className={`inline-block w-5 h-5 rounded-full text-white text-xs font-black leading-5 ${getColor(b[2])}`}>{b[2]}</span>
+            {zone.buys.map((b, i) => (
+              <div key={i} className="bg-gray-900/60 rounded-lg px-2 py-1.5 flex items-center justify-center gap-1">
+                <NumBadge num={b[0]} />
+                <span className="text-gray-500 text-xs">-</span>
+                <NumBadge num={b[1]} />
+                <span className="text-gray-500 text-xs">-</span>
+                <NumBadge num={b[2]} />
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* 3着候補 */}
+      <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-3">
+        <div className="text-emerald-400 font-bold text-xs mb-2">🎯 3着候補（流し対象）</div>
+        <div className="flex flex-wrap gap-2">
+          {result.third.slice(0, 8).map((t, i) => (
+            <div key={i} className="flex items-center gap-1.5 bg-gray-700/40 rounded-lg px-2 py-1">
+              <NumBadge num={t.player.num} />
+              <span className="text-white text-xs font-medium">{t.player.name}</span>
+            </div>
+          ))}
         </div>
-      )}
+      </div>
+
     </div>
   );
 }
 
-// ==================== HISTORY & BALANCE ====================
+
 function HistoryTab({ history, setHistory }) {
   const [form, setForm] = useState({ race: "", invest: "", payout: "", note: "" });
 
