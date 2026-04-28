@@ -383,7 +383,7 @@ function ResultPanel({ result, players }) {
   const heads = result.heads;
   const honmeiHead = heads.filter(h => h.priority <= 2).slice(0, 1);
   const anaHeads   = heads.filter(h => h.priority <= 3).slice(0, 3);
-  const穴Heads     = heads.slice(0, 5);
+  const anaHeads2     = heads.slice(0, 5);
   const thirds     = result.third.slice(0, 7).map(t => t.player.num);
   const allNums    = players.map((_, i) => i + 1).filter(n => players[n-1]?.name);
 
@@ -426,18 +426,18 @@ function ResultPanel({ result, players }) {
 
   // 穴: 最大10点（頭広め・上2ゾーンと重複なし）
   const anaSet = new Set(anaBuys.map(b => b.join('-')));
-  const 穴Buys = result.buyTargets.filter(b => {
+  const anaBuys2 = result.buyTargets.filter(b => {
     const key = b.join('-');
     return !honmeiSet.has(key) && !anaSet.has(key);
   }).slice(0, 8);
 
   // 合計25点以内（3+14+8=25）
-  const total = honmeiBuys.length + anaBuys.length + 穴Buys.length;
+  const total = honmeiBuys.length + anaBuys.length + anaBuys2.length;
 
   const zones = {
     honmei: { label: "本命線", emoji: "🎯", color: "blue",   desc: `的中率低め・保険程度（${honmeiBuys.length}点）`, buys: honmeiBuys, invest: honmeiBuys.length * 100, range: "〜3,000円" },
     ana:    { label: "中穴",   emoji: "💫", color: "yellow", desc: `メイン狙い・3,000〜15,000円（${anaBuys.length}点）`, buys: anaBuys, invest: anaBuys.length * 100, range: "3,000〜15,000円" },
-    ana2:   { label: "穴",     emoji: "🕳️", color: "red",    desc: `一発狙い・10,000〜25,000円（${穴Buys.length}点）`, buys: 穴Buys, invest: 穴Buys.length * 100, range: "10,000〜25,000円" },
+    ana2:   { label: "穴",     emoji: "🕳️", color: "red",    desc: `一発狙い・10,000〜25,000円（${anaBuys2.length}点）`, buys: anaBuys2, invest: anaBuys2.length * 100, range: "10,000〜25,000円" },
   };
 
   const zone = zones[selectedZone];
